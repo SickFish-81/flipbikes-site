@@ -1,0 +1,32 @@
+/* Shop additions. Palette matches the site: --yello #ffc800 on near-black. */
+.shop-buy { margin-top: 12px; text-align: center; }
+.shop-buy .shop-add { cursor: pointer; border: 0; }
+.shop-note { margin: 6px 0 0; font-size: 13px; line-height: 20px; color: #ffc800; }
+.shop-soldout { font-weight: 600; color: #ff7a7a; }
+.shop-buy .shop-link { color: #ffc800; font-size: 13px; text-decoration: underline; }
+.shop-added { display: block; min-height: 22px; margin-top: 6px; font-size: 13px; line-height: 22px; color: #fff; }
+.shop-added a { color: #ffc800; text-decoration: underline; }
+.starterright .shop-buy { text-align: left; }
+
+.shop-page { background: #0c0b0b; color: #fff; min-height: 70vh; padding: 60px 20px 100px; }
+.shop-page .shop-wrap { max-width: 760px; margin: 0 auto; }
+.shop-page h1 { font-family: "Zen Dots", sans-serif; font-weight: 400; color: #ffc800; font-size: 32px; margin: 0 0 28px; }
+.cart-empty { font-size: 18px; margin-bottom: 20px; }
+.cart-lines { border-top: 1px solid #333; }
+.cart-line { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 16px 0; border-bottom: 1px solid #333; }
+.cart-name { flex: 1 1 240px; display: flex; flex-direction: column; }
+.cart-unit { font-size: 13px; color: #aaa; }
+.cart-controls { display: flex; align-items: center; gap: 12px; }
+.cart-qty { width: 64px; padding: 8px; background: #1a1a1a; color: #fff; border: 1px solid #444; font-size: 16px; }
+.cart-remove { background: none; border: 0; color: #aaa; text-decoration: underline; cursor: pointer; font-size: 13px; }
+.cart-remove:hover { color: #ffc800; }
+.cart-total { min-width: 80px; text-align: right; font-weight: 600; }
+.cart-summary { margin: 28px 0 20px; }
+.cart-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; gap: 12px; }
+.cart-country { padding: 8px; background: #1a1a1a; color: #fff; border: 1px solid #444; font-size: 16px; }
+.cart-grand { border-top: 1px solid #333; margin-top: 8px; padding-top: 14px; font-size: 20px; font-weight: 700; color: #ffc800; }
+.cart-fine { font-size: 13px; line-height: 20px; color: #aaa; margin: 10px 0; }
+.cart-error { min-height: 22px; color: #ff7a7a; margin: 0 0 10px; }
+.cart-pay { width: 100%; cursor: pointer; border: 0; padding: 16px 25px; font-size: 14px; }
+.cart-pay:disabled { opacity: .6; cursor: wait; }
+@media (max-width: 479px) { .cart-total { text-align: left; } }
