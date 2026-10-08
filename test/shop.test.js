@@ -11,12 +11,14 @@ import shop from "../api/shop.js";
 import quote from "../api/quote.js";
 import suggest from "../api/address-suggest.js";
 import webhook, { verifySignature, itemsFromMetadata } from "../api/stripe-webhook.js";
+import { gstFromInclusive } from "../api/_lib/invoice.js";
 
 const calls = [];
 let fakeStock;     // what the fake DB's flip_stock holds
 let orders;        // what the fake DB's flip_orders holds
 let stripeStatus;  // status the fake Stripe returns
 let places;        // what the fake Google Places knows, by place id
+let invSeq;        // the fake database's invoice-number counter
 
 function res() {
   const r = { code: 0, body: undefined, headers: {} };
@@ -32,6 +34,8 @@ beforeEach(() => {
   fakeStock = { "flip-g3": 5, "d-rings": 1 };
   orders = {};
   stripeStatus = 200;
+  invSeq = 1000;
+  delete process.env.FLIP_GST_NUMBER; delete process.env.FLIP_BUSINESS_NAME; delete process.env.FLIP_BUSINESS_ADDRESS;
   places = {
     place_1: { formattedAddress: "12 Smith Rd, Te Awamutu 3800, New Zealand", addressComponents: [
       { types: ["street_number"], longText: "12" }, { types: ["route"], longText: "Smith Road" },
@@ -78,7 +82,7 @@ beforeEach(() => {
     if (u.includes("/rest/v1/flip_orders")) {
       if (opts.method === "POST") {
         const o = JSON.parse(opts.body);
-        orders[o.session_id] ??= { ...o, stock_taken: false, emailed: false };
+        orders[o.session_id] ??= { ...o, invoice_number: ++invSeq, stock_taken: false, emailed: false };
         return new Response("", { status: 201 });
       }
       if (opts.method === "PATCH") {
@@ -379,4 +383,78 @@ test("webhook: ignores unrelated events and unpaid sessions", async () => {
   r = await deliver(event({ payment_status: "unpaid" }));
   assert.equal(r.code, 200);
   assert.equal(fakeStock["flip-g3"], 5);
+});
+
+// ---- GST tax invoice
+const withGst = () => {
+  process.env.FLIP_GST_NUMBER = "123-456-789";
+  process.env.FLIP_BUSINESS_NAME = "Flip Bikes Ltd";
+  process.env.FLIP_BUSINESS_ADDRESS = "556 Te Puke Highway|Te Puke 3187";
+};
+
+test("gst: 3/23 of a GST-inclusive total, rounded once", () => {
+  assert.equal(gstFromInclusive(36500), 4761);  // $365.00 -> $47.61
+  assert.equal(gstFromInclusive(2500), 326);
+  assert.equal(gstFromInclusive(0), 0);
+});
+
+test("invoice: with a GST number the customer gets a proper tax invoice", async () => {
+  withGst();
+  await deliver(event());
+  const cust = emails()[1];
+  assert.match(cust.subject, /^Tax invoice FLIP-1001 /);
+  for (const part of [/TAX INVOICE\s+FLIP-1001/, /GST number: 123-456-789/, /Flip Bikes Ltd/, /556 Te Puke Highway/,
+                      /Pat Rider/, /12 Smith Rd/, /2 x FLIP G3 Bike Chock\s+\$179\.00 each = \$358\.00/,
+                      /TOTAL \(including GST\) \$365\.00/, /GST: \$47\.61/, /Date: \d\d\/\d\d\/\d{4}/]) {
+    assert.match(cust.text, part);
+  }
+  assert.match(cust.html, /TAX INVOICE/);
+  assert.match(cust.html, /123-456-789/);
+  assert.match(cust.html, /\$47\.61/);
+  assert.doesNotMatch(emails()[0].text, /GST number is NOT set/);
+});
+
+test("invoice: without a GST number it is only an order confirmation, and Craig is told", async () => {
+  await deliver(event());
+  const [craig, cust] = emails();
+  assert.match(cust.subject, /^Order confirmation /);
+  assert.match(cust.text, /ORDER CONFIRMATION/);
+  assert.doesNotMatch(cust.text, /TAX INVOICE/);
+  assert.doesNotMatch(cust.text, /GST:/);
+  assert.match(craig.text, /GST number is NOT set/);
+});
+
+test("invoice: numbers are sequential per order and survive a webhook retry unchanged", async () => {
+  withGst();
+  await deliver(event());                                   // order 1
+  const other = event({ id: "cs_test_2" });
+  await deliver(other);                                     // order 2
+  assert.match(emails()[1].subject, /FLIP-1001/);
+  assert.match(emails()[3].subject, /FLIP-1002/);
+
+  // order 1's email fails, then Stripe retries: it must still be 1001, not 1003
+  calls.length = 0; orders["cs_test_3"] = undefined; delete orders["cs_test_3"];
+  const real = globalThis.fetch;
+  const third = event({ id: "cs_test_3" });
+  globalThis.fetch = async (u, o) => (String(u).startsWith("https://api.resend.com/") ? new Response("boom", { status: 500 }) : real(u, o));
+  assert.equal((await deliver(third)).code, 500);
+  globalThis.fetch = real;
+  calls.length = 0;
+  assert.equal((await deliver(third)).code, 200);
+  assert.match(emails()[1].subject, /FLIP-1003/);
+});
+
+test("invoice: Australian orders show zero-rated GST, not 15%", async () => {
+  withGst();
+  await deliver(event({ metadata: { items: "flip-g3:1", country: "AU", name: "Sam", phone: "0400", addr: "1 George St, Sydney, 2000, Australia", postcode: "2000", rural: "no" } }));
+  const cust = emails()[1];
+  assert.match(cust.text, /GST: \$0\.00\s+\(zero-rated/);
+});
+
+test("invoice: customer-supplied text is escaped in the HTML email", async () => {
+  withGst();
+  await deliver(event({ metadata: { items: "flip-g3:1", country: "NZ", name: "<script>alert(1)</script>", phone: "021123456", addr: "1 A St, B, 3800, New Zealand", postcode: "3800", rural: "no" } }));
+  const cust = emails()[1];
+  assert.doesNotMatch(cust.html, /<script>/);
+  assert.match(cust.html, /&lt;script&gt;/);
 });

@@ -14,6 +14,8 @@
 import crypto from "node:crypto";
 import { bySku, money } from "./_lib/catalog.js";
 import { dbConfigured, claimOrder, patchOrder, takeStock } from "./_lib/db.js";
+import { business } from "./_lib/business.js";
+import { buildInvoice, invoiceText, invoiceHtml, invoiceNumber } from "./_lib/invoice.js";
 
 // Signature checking needs the EXACT bytes Stripe sent, so Vercel must not
 // parse the body for us.
@@ -65,7 +67,7 @@ export function itemsFromMetadata(str) {
     });
 }
 
-function buildEmails(order, remaining) {
+function buildEmails(order, remaining, inv) {
   const a = order.address || {};
   const addr = a.formatted
     ? a.formatted.split(", ").join("\n") + (a.note ? `\n(Delivery note: ${a.note})` : "")
@@ -87,8 +89,10 @@ function buildEmails(order, remaining) {
     .filter(([, q]) => q != null && q <= 2)
     .map(([sku, q]) => `  ${bySku.get(sku)?.name || sku}: ${q === 0 ? "OUT OF STOCK" : q + " left"}`);
 
+  const gstWarn = inv.isTaxInvoice ? "" :
+    "!! GST number is NOT set (FLIP_GST_NUMBER in Vercel), so this customer got an order confirmation, not a tax invoice.\n\n";
   const craig =
-    `New Flip Bikes order - paid.\n\n` +
+    `New Flip Bikes order - paid.${inv.number ? "  Invoice " + inv.number : ""}\n\n` + gstWarn +
     `Items:\n${lines}\n${totals}\n\n` +
     `Ship to:\n  ${order.name || "(no name)"}\n${addr ? addr.split("\n").map((l) => "  " + l).join("\n") : "  (no address)"}\n${ruralLine}\n` +
     `Contact:\n  Email: ${order.email || "(none)"}\n  Phone: ${order.phone || "(none)"}\n\n` +
@@ -96,23 +100,21 @@ function buildEmails(order, remaining) {
     `Stripe: https://dashboard.stripe.com/payments/${order.payment_intent || ""}\n` +
     `Order ref: ${order.session_id}\n`;
 
-  const customer =
-    `Hi ${order.name || "there"},\n\n` +
-    `Thanks for your Flip Bikes order - your payment has been received.\n\n` +
-    `Your order:\n${lines}\n${totals}\n\n` +
-    `Shipping to:\n${addr ? addr.split("\n").map((l) => "  " + l).join("\n") : "  (address on file)"}\n\n` +
-    `Orders are usually shipped the next business day. If you have any questions, just reply to this email ` +
-    `or call Craig on +64 021 0832 7787.\n\n` +
-    `Cheers,\nFLIP Bike Chocks\n`;
+  const hi = `Hi ${order.name || "there"},`;
+  const intro = "Thanks for your Flip Bikes order - your payment has been received. Orders are usually shipped the next business day.";
+  const outro = "Questions? Just reply to this email or call Craig on +64 021 0832 7787.";
+  const customer = `${hi}\n\n${intro}\n\n${invoiceText(inv)}\n\n${outro}\n\nCheers,\nFLIP Bike Chocks\n`;
+  const customerHtml = invoiceHtml(inv, `<p>${hi.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</p><p>${intro}</p>`) +
+    `<p style="font-family:Arial,Helvetica,sans-serif;font-size:14px">${outro}</p>`;
 
-  return { craig, customer };
+  return { craig, customer, customerHtml };
 }
 
-async function send(key, { to, subject, text, reply_to }) {
+async function send(key, { to, subject, text, html, reply_to }) {
   const r = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from: FROM, to: [to], reply_to, subject, text }),
+    body: JSON.stringify({ from: FROM, to: [to], reply_to, subject, text, ...(html ? { html } : {}) }),
   });
   if (!r.ok) throw new Error(`Resend ${r.status}: ${await r.text()}`);
 }
@@ -181,10 +183,19 @@ export default async function handler(req, res) {
     if (!row.emailed) {
       const key = process.env.RESEND_API_KEY;
       if (!key) throw new Error("RESEND_API_KEY is not set; order emails not sent.");
-      const mail = buildEmails(order, remaining);
+      // The invoice number is handed out by the database when the order is
+      // claimed, so it is stable across webhook retries. (Without a database
+      // there is nothing sequential to hand out; the order reference stands in.)
+      const num = row.invoice_number ? invoiceNumber(row.invoice_number) : "FLIP-" + String(order.session_id).slice(-8).toUpperCase();
+      const inv = buildInvoice({ order, number: num, dateMs: (event.created || Date.now() / 1000) * 1000, biz: business() });
+      const mail = buildEmails(order, remaining, inv);
       await send(key, { to: TO, subject: `FLIP order: ${order.name || order.email || order.session_id}`, text: mail.craig, reply_to: order.email || REPLY_TO });
       if (order.email) {
-        await send(key, { to: order.email, subject: "Your FLIP Bike Chocks order", text: mail.customer, reply_to: REPLY_TO });
+        await send(key, {
+          to: order.email,
+          subject: (inv.isTaxInvoice ? `Tax invoice ${inv.number}` : `Order confirmation ${inv.number}`) + " - your FLIP Bike Chocks order",
+          text: mail.customer, html: mail.customerHtml, reply_to: REPLY_TO,
+        });
       }
       if (dbConfigured()) await patchOrder(order.session_id, { emailed: true });
     }

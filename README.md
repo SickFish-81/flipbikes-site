@@ -36,6 +36,8 @@ this site. After payment Stripe calls the webhook, which takes the stock off,
 emails Craig what to ship, and emails the customer a confirmation.
 
     api/_lib/catalog.js   products and PRICES (edit here only)
+    api/_lib/business.js  who the invoice is from (GST number etc., from env vars)
+    api/_lib/invoice.js   builds the GST tax invoice for the customer email
     api/_lib/shipping.js  SHIPPING RATE TABLE + rural postcode list (edit here only)
     api/_lib/places.js    Google Places lookups (server-side; key never reaches the browser)
     api/_lib/order.js     prices a cart + address; shared by quote and checkout
@@ -64,6 +66,9 @@ link - so merging this changes nothing on the live site by itself.
    - `STRIPE_SECRET_KEY`        (use a `sk_test_...` key while testing)
    - `STRIPE_WEBHOOK_SECRET`    (`whsec_...`, from the webhook endpoint below)
    - `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
+   - `FLIP_GST_NUMBER`, `FLIP_BUSINESS_NAME`, `FLIP_BUSINESS_ADDRESS` (address lines
+     separated by `|`). Without a GST number the customer gets an order confirmation,
+     NOT a tax invoice, and Craig's email says so.
    - `GOOGLE_MAPS_API_KEY`      (optional; enables address search. Restrict it to
      "Places API (New)" in Google Cloud and set a daily quota cap. Without it the
      cart page shows plain address fields instead)
@@ -78,6 +83,15 @@ link - so merging this changes nothing on the live site by itself.
 
 If Supabase isn't configured the shop still takes payments and sends emails;
 it just can't track stock or ignore a duplicate webhook.
+
+### GST tax invoice
+
+The customer's confirmation email is a GST tax invoice when `FLIP_GST_NUMBER` is
+set: invoice number (FLIP-1001, 1002, ... handed out by the database so a retried
+webhook can't issue a second one), date, supplier name and GST number, buyer name
+and address, itemised prices, the GST amount (total x 3/23, as prices include GST).
+Australian orders show GST as zero-rated, since NZ GST is 0% on exported goods;
+`GST_ON_AUSTRALIA` in `business.js` flips that. Confirm it with Craig's accountant.
 
 ### Shipping
 
