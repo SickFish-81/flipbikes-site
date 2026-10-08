@@ -5,7 +5,8 @@
 // false the site's JS adds no buttons and no cart link, so the pages look
 // exactly as they did before ecommerce — it's the launch switch.
 
-import { PRODUCTS, SHIPPING, MAX_QTY_PER_LINE } from "./_lib/catalog.js";
+import { PRODUCTS, MAX_QTY_PER_LINE } from "./_lib/catalog.js";
+import { placesConfigured } from "./_lib/places.js";
 import { dbConfigured, getStock } from "./_lib/db.js";
 
 export default async function handler(req, res) {
@@ -28,7 +29,7 @@ export default async function handler(req, res) {
   return res.status(200).json({
     enabled,
     maxQty: MAX_QTY_PER_LINE,
-    shipping: Object.fromEntries(Object.entries(SHIPPING).map(([c, s]) => [c, { label: s.label, amount: s.amount }])),
+    addressSearch: placesConfigured(), // false = the cart page shows manual address fields
     products: PRODUCTS.map((p) => ({
       sku: p.sku,
       name: p.name,

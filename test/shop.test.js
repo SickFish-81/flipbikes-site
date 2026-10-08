@@ -8,12 +8,15 @@ import crypto from "node:crypto";
 
 import checkout from "../api/checkout.js";
 import shop from "../api/shop.js";
+import quote from "../api/quote.js";
+import suggest from "../api/address-suggest.js";
 import webhook, { verifySignature, itemsFromMetadata } from "../api/stripe-webhook.js";
 
 const calls = [];
 let fakeStock;     // what the fake DB's flip_stock holds
 let orders;        // what the fake DB's flip_orders holds
 let stripeStatus;  // status the fake Stripe returns
+let places;        // what the fake Google Places knows, by place id
 
 function res() {
   const r = { code: 0, body: undefined, headers: {} };
@@ -29,11 +32,26 @@ beforeEach(() => {
   fakeStock = { "flip-g3": 5, "d-rings": 1 };
   orders = {};
   stripeStatus = 200;
+  places = {
+    place_1: { formattedAddress: "12 Smith Rd, Te Awamutu 3800, New Zealand", addressComponents: [
+      { types: ["street_number"], longText: "12" }, { types: ["route"], longText: "Smith Road" },
+      { types: ["locality"], longText: "Te Awamutu" }, { types: ["postal_code"], longText: "3800" },
+      { types: ["country"], longText: "New Zealand", shortText: "NZ" } ] },
+    place_south: { formattedAddress: "5 Beach St, Queenstown 9300, New Zealand", addressComponents: [
+      { types: ["street_number"], longText: "5" }, { types: ["route"], longText: "Beach Street" },
+      { types: ["locality"], longText: "Queenstown" }, { types: ["postal_code"], longText: "9300" },
+      { types: ["country"], longText: "New Zealand", shortText: "NZ" } ] },
+    place_au: { formattedAddress: "1 George St, Sydney NSW 2000, Australia", addressComponents: [
+      { types: ["locality"], longText: "Sydney" }, { types: ["postal_code"], longText: "2000" },
+      { types: ["country"], longText: "Australia", shortText: "AU" } ] },
+    place_nopost: { formattedAddress: "Somewhere, New Zealand", addressComponents: [{ types: ["country"], longText: "New Zealand", shortText: "NZ" }] },
+  };
   process.env.STRIPE_SECRET_KEY = "sk_test_fake";
   process.env.STRIPE_WEBHOOK_SECRET = "whsec_fake";
   process.env.RESEND_API_KEY = "re_fake";
   process.env.SUPABASE_URL = "https://fake.supabase.co";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "service_fake";
+  delete process.env.GOOGLE_MAPS_API_KEY; // each test opts in
 
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
@@ -44,6 +62,13 @@ beforeEach(() => {
       return stripeStatus === 200 ? json({ url: "https://checkout.stripe.com/c/pay/cs_test_1" }) : json({ error: "nope" }, stripeStatus);
     }
     if (u.startsWith("https://api.resend.com/")) return json({ id: "email_1" });
+    if (u === "https://places.googleapis.com/v1/places:autocomplete") {
+      return json({ suggestions: [{ placePrediction: { placeId: "place_1", text: { text: "12 Smith Road, Te Awamutu, New Zealand" } } }, { queryPrediction: {} }] });
+    }
+    if (u.startsWith("https://places.googleapis.com/v1/places/")) {
+      const id = decodeURIComponent(u.split("/places/")[1].split("?")[0]);
+      return json(places[id] ?? {}, places[id] ? 200 : 404);
+    }
     if (u.includes("/rest/v1/flip_stock")) return json(Object.entries(fakeStock).map(([sku, qty]) => ({ sku, qty })));
     if (u.includes("/rest/v1/rpc/flip_take_stock")) {
       const { p_sku, p_qty } = JSON.parse(opts.body);
@@ -73,72 +98,171 @@ const post = (handler, body, headers = {}) => {
   const r = res();
   return handler({ method: "POST", body, headers: { host: "flipbikes.co.nz", ...headers } }, r).then(() => r);
 };
+const get = (handler, query = {}) => { const r = res(); return handler({ method: "GET", query }, r).then(() => r); };
 const stripeBody = () => new URLSearchParams(calls.find((c) => c.url.startsWith("https://api.stripe.com/")).body);
+
+const manual = (postcode = "3800", extra = {}) => ({ manual: { line1: "12 Smith Road", city: "Te Awamutu", postcode, ...extra } });
+const order = (over = {}) => ({
+  items: [{ sku: "flip-g3", qty: 1 }], country: "NZ", name: "Pat Rider", email: "pat@example.com",
+  phone: "021 123 456", address: manual(), ...over,
+});
+const shipAmount = () => stripeBody().get("shipping_options[0][shipping_rate_data][fixed_amount][amount]");
 
 // ---- /api/checkout
 test("checkout: builds a Stripe session from catalog prices, ignoring any price the browser sends", async () => {
-  const r = await post(checkout, { items: [{ sku: "flip-g3", qty: 2, price: 1 }], country: "NZ" });
+  const r = await post(checkout, order({ items: [{ sku: "flip-g3", qty: 2, price: 1 }] }));
   assert.equal(r.code, 200);
   assert.equal(r.body.url, "https://checkout.stripe.com/c/pay/cs_test_1");
   const b = stripeBody();
   assert.equal(b.get("line_items[0][price_data][unit_amount]"), "17900"); // not 1
   assert.equal(b.get("line_items[0][quantity]"), "2");
-  assert.equal(b.get("shipping_options[0][shipping_rate_data][fixed_amount][amount]"), "1500");
-  assert.equal(b.get("shipping_address_collection[allowed_countries][0]"), "NZ");
   assert.equal(b.get("metadata[items]"), "flip-g3:2");
+  assert.equal(b.get("customer_email"), "pat@example.com");
+  assert.equal(b.get("shipping_address_collection[allowed_countries][0]"), null); // we collect it, not Stripe
 });
 
-test("checkout: Australia gets the Australian rate and country", async () => {
-  await post(checkout, { items: [{ sku: "flip-standard", qty: 1 }], country: "AU" });
+test("checkout: delivery details ride along to Stripe and the webhook", async () => {
+  await post(checkout, order({ note: "Leave at the shed" }));
   const b = stripeBody();
-  assert.equal(b.get("shipping_options[0][shipping_rate_data][fixed_amount][amount]"), "6000");
-  assert.equal(b.get("shipping_address_collection[allowed_countries][0]"), "AU");
+  assert.equal(b.get("metadata[name]"), "Pat Rider");
+  assert.equal(b.get("metadata[phone]"), "021 123 456");
+  assert.match(b.get("metadata[addr]"), /12 Smith Road, Te Awamutu, 3800/);
+  assert.equal(b.get("metadata[postcode]"), "3800");
+  assert.equal(b.get("metadata[note]"), "Leave at the shed");
+  assert.equal(b.get("payment_intent_data[shipping][address][postal_code]"), "3800");
+});
+
+test("shipping: North vs South Island, extra items, Australia", async () => {
+  await post(checkout, order());                                   // 1 item, North
+  assert.equal(shipAmount(), "1200");
+  calls.length = 0;
+  await post(checkout, order({ address: manual("9300") }));        // 1 item, South
+  assert.equal(shipAmount(), "1500");
+  calls.length = 0;
+  await post(checkout, order({ items: [{ sku: "flip-g3", qty: 3 }] })); // 3 items: +2 x $3
+  assert.equal(shipAmount(), "1800");
+  calls.length = 0;
+  await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }) }));
+  assert.equal(shipAmount(), "6000");
+  assert.equal(stripeBody().get("payment_intent_data[shipping][address][country]"), "AU");
+});
+
+test("shipping: rural surcharge is added for an RD address and flagged for Craig", async () => {
+  await post(checkout, order({ address: manual("3874", { line1: "456 Hautapu Rd, RD 2" }) }));
+  assert.equal(shipAmount(), "2200"); // 1200 + 1000 rural
+  assert.equal(stripeBody().get("metadata[rural]"), "yes");
+  assert.match(stripeBody().get("shipping_options[0][shipping_rate_data][display_name]"), /rural/);
+});
+
+test("shipping: Chatham Islands asks the customer to contact us", async () => {
+  const r = await post(checkout, order({ address: manual("8942") }));
+  assert.equal(r.code, 400);
+  assert.match(r.body.error, /contact us/);
+});
+
+test("checkout: requires name, a sane email and a phone number", async () => {
+  for (const over of [{ name: "" }, { email: "nope" }, { phone: "12" }, { address: undefined }, { address: { manual: { line1: "x" } } }]) {
+    const r = await post(checkout, order(over));
+    assert.equal(r.code, 400, JSON.stringify(over));
+  }
+  assert.equal(calls.filter((c) => c.url.startsWith("https://api.stripe.com/")).length, 0);
 });
 
 test("checkout: rejects unknown products, bad quantities, bad countries, empty carts", async () => {
-  for (const body of [
-    { items: [{ sku: "free-chock", qty: 1 }], country: "NZ" },
-    { items: [{ sku: "flip-g3", qty: 0 }], country: "NZ" },
-    { items: [{ sku: "flip-g3", qty: 1.5 }], country: "NZ" },
-    { items: [{ sku: "flip-g3", qty: 21 }], country: "NZ" },
-    { items: [{ sku: "flip-g3", qty: 1 }], country: "US" },
-    { items: [], country: "NZ" },
+  for (const over of [
+    { items: [{ sku: "free-chock", qty: 1 }] },
+    { items: [{ sku: "flip-g3", qty: 0 }] },
+    { items: [{ sku: "flip-g3", qty: 1.5 }] },
+    { items: [{ sku: "flip-g3", qty: 21 }] },
+    { country: "US" },
+    { items: [] },
   ]) {
-    const r = await post(checkout, body);
-    assert.equal(r.code, 400, JSON.stringify(body));
+    const r = await post(checkout, order(over));
+    assert.equal(r.code, 400, JSON.stringify(over));
   }
   assert.equal(calls.filter((c) => c.url.startsWith("https://api.stripe.com/")).length, 0);
 });
 
 test("checkout: refuses when asking for more than is in stock, and says how many are left", async () => {
-  const r = await post(checkout, { items: [{ sku: "d-rings", qty: 2 }], country: "NZ" });
+  const r = await post(checkout, order({ items: [{ sku: "d-rings", qty: 2 }] }));
   assert.equal(r.code, 409);
   assert.match(r.body.error, /only 1/);
 });
 
 test("checkout: a product with no stock row is treated as untracked, not sold out", async () => {
-  const r = await post(checkout, { items: [{ sku: "tie-downs", qty: 3 }], country: "NZ" });
+  const r = await post(checkout, order({ items: [{ sku: "tie-downs", qty: 3 }] }));
   assert.equal(r.code, 200);
 });
 
 test("checkout: fails open if the stock database is down", async () => {
   const real = globalThis.fetch;
   globalThis.fetch = async (u, o) => (String(u).includes("/rest/v1/") ? new Response("down", { status: 500 }) : real(u, o));
-  const r = await post(checkout, { items: [{ sku: "flip-g3", qty: 1 }], country: "NZ" });
+  const r = await post(checkout, order());
   assert.equal(r.code, 200);
 });
 
 test("checkout: 503 with a friendly message until Stripe is configured", async () => {
   delete process.env.STRIPE_SECRET_KEY;
-  const r = await post(checkout, { items: [{ sku: "flip-g3", qty: 1 }], country: "NZ" });
+  const r = await post(checkout, order());
   assert.equal(r.code, 503);
 });
 
 test("checkout: a Stripe failure becomes a generic 502, never leaking Stripe's error", async () => {
   stripeStatus = 400;
-  const r = await post(checkout, { items: [{ sku: "flip-g3", qty: 1 }], country: "NZ" });
+  const r = await post(checkout, order());
   assert.equal(r.code, 502);
   assert.doesNotMatch(JSON.stringify(r.body), /nope/);
+});
+
+// ---- Google Places address lookup
+test("address: a Google place is re-read on the server, so the browser can't pick its own postcode", async () => {
+  process.env.GOOGLE_MAPS_API_KEY = "gkey";
+  // The browser claims a cheap postcode alongside a real South Island place id...
+  const r = await post(checkout, order({ address: { placeId: "place_south", manual: { line1: "x", city: "y", postcode: "3800" } } }));
+  assert.equal(r.code, 200);
+  assert.equal(shipAmount(), "1500"); // ...but the SERVER's postcode (9300) decided the price
+  assert.equal(stripeBody().get("metadata[postcode]"), "9300");
+  assert.match(stripeBody().get("metadata[addr]"), /Queenstown/);
+});
+
+test("address: a place in the wrong country, or with no postcode, is refused", async () => {
+  process.env.GOOGLE_MAPS_API_KEY = "gkey";
+  let r = await post(checkout, order({ address: { placeId: "place_au" } }));           // NZ order, AU address
+  assert.equal(r.code, 400);
+  assert.match(r.body.error, /isn't in New Zealand/);
+  r = await post(checkout, order({ address: { placeId: "place_nopost" } }));
+  assert.equal(r.code, 400);
+  r = await post(checkout, order({ address: { placeId: "place_unknown" } }));
+  assert.equal(r.code, 400);
+});
+
+test("address-suggest: proxies Google, keeps the key server-side, and degrades quietly", async () => {
+  let r = await get(suggest, { q: "12 smith", country: "NZ" });
+  assert.equal(r.body.enabled, false);                       // no key yet
+
+  process.env.GOOGLE_MAPS_API_KEY = "gkey";
+  r = await get(suggest, { q: "12 smith", country: "NZ", token: "tok" });
+  assert.deepEqual(r.body.suggestions, [{ placeId: "place_1", text: "12 Smith Road, Te Awamutu, New Zealand" }]);
+  const g = calls.find((c) => c.url.includes("places:autocomplete"));
+  assert.deepEqual(JSON.parse(g.body).includedRegionCodes, ["nz"]);
+  assert.doesNotMatch(JSON.stringify(r.body), /gkey/);
+
+  r = await get(suggest, { q: "12", country: "NZ" });         // too short: no call
+  assert.deepEqual(r.body.suggestions, []);
+  r = await get(suggest, { q: "12 smith", country: "US" });   // unsupported country
+  assert.deepEqual(r.body.suggestions, []);
+});
+
+// ---- /api/quote
+test("quote: gives the cart page a live shipping price, using the same logic as checkout", async () => {
+  const r = await post(quote, { items: [{ sku: "flip-g3", qty: 1 }], country: "NZ", address: manual("9300") });
+  assert.equal(r.code, 200);
+  assert.equal(r.body.amount, 1500);
+  assert.equal(r.body.rural, false);
+  const rr = await post(quote, { items: [{ sku: "flip-g3", qty: 1 }], country: "NZ", address: manual("3874", { line1: "9 Foo Rd RD 1" }) });
+  assert.equal(rr.body.amount, 2200);
+  assert.equal(rr.body.rural, true);
+  assert.equal((await post(quote, { items: [], country: "NZ", address: manual() })).code, 400);
 });
 
 // ---- /api/shop
@@ -150,9 +274,14 @@ test("shop: reports disabled until Stripe is configured, enabled after, with sto
   process.env.STRIPE_SECRET_KEY = "sk_test_fake";
   r = res(); await shop({ method: "GET" }, r);
   assert.equal(r.body.enabled, true);
+  assert.equal(r.body.addressSearch, false);
   assert.equal(r.body.products.find((p) => p.sku === "flip-g3").stock, 5);
   assert.equal(r.body.products.find((p) => p.sku === "tie-downs").stock, null);
-  assert.equal(r.body.shipping.NZ.amount, 1500);
+
+  process.env.GOOGLE_MAPS_API_KEY = "gkey";
+  r = res(); await shop({ method: "GET" }, r);
+  assert.equal(r.body.addressSearch, true);
+  assert.doesNotMatch(JSON.stringify(r.body), /gkey/);
 });
 
 // ---- webhook
@@ -179,7 +308,7 @@ const event = (extra = {}) =>
     data: { object: {
       id: "cs_test_1", payment_intent: "pi_1", payment_status: "paid", amount_total: 36500,
       total_details: { amount_shipping: 1500 },
-      metadata: { items: "flip-g3:2", country: "NZ" },
+      metadata: { items: "flip-g3:2", country: "NZ", name: "Pat Rider", phone: "021123456", addr: "12 Smith Rd, Te Awamutu, 3800, New Zealand", postcode: "3800", rural: "yes", note: "Leave at the shed" },
       customer_details: { name: "Pat Rider", email: "pat@example.com", phone: "021123456" },
       collected_information: { shipping_details: { name: "Pat Rider", address: { line1: "1 Trailer Rd", city: "Te Awamutu", postal_code: "3800", country: "NZ" } } },
       ...extra,
@@ -207,7 +336,9 @@ test("webhook: a paid order takes stock off, emails Craig and the customer", asy
   const [craig, cust] = emails();
   assert.equal(craig.to[0], "craig@betterservice.co.nz");
   assert.match(craig.text, /2 x FLIP G3/);
-  assert.match(craig.text, /1 Trailer Rd/);
+  assert.match(craig.text, /12 Smith Rd/);
+  assert.match(craig.text, /Rural delivery: YES/);
+  assert.match(craig.text, /Leave at the shed/);
   assert.match(craig.text, /TOTAL PAID: \$365\.00/);
   assert.equal(cust.to[0], "pat@example.com");
   assert.match(cust.text, /payment has been received/);

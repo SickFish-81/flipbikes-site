@@ -30,3 +30,19 @@
 .cart-pay { width: 100%; cursor: pointer; border: 0; padding: 16px 25px; font-size: 14px; }
 .cart-pay:disabled { opacity: .6; cursor: wait; }
 @media (max-width: 479px) { .cart-total { text-align: left; } }
+
+/* Delivery details on the cart page */
+.cart-details { margin: 32px 0 8px; }
+.cart-details h2 { font-family: "Zen Dots", sans-serif; font-weight: 400; color: #ffc800; font-size: 20px; margin: 0 0 16px; }
+.cart-field { display: block; margin: 0 0 16px; position: relative; }
+.cart-field > span { display: block; font-size: 14px; margin-bottom: 6px; }
+.cart-field small { display: block; margin-top: 4px; font-size: 12px; color: #aaa; }
+.cart-input { width: 100%; padding: 12px; background: #1a1a1a; color: #fff; border: 1px solid #444; font-size: 16px; box-sizing: border-box; }
+.cart-input:focus { outline: 2px solid #ffc800; outline-offset: 0; }
+.addr-list { list-style: none; margin: 0; padding: 0; position: absolute; z-index: 10; left: 0; right: 0; background: #1a1a1a; border: 1px solid #444; max-height: 260px; overflow-y: auto; }
+.addr-option { display: block; width: 100%; text-align: left; padding: 12px; background: none; border: 0; border-bottom: 1px solid #2a2a2a; color: #fff; cursor: pointer; font-size: 15px; line-height: 22px; }
+.addr-option:hover, .addr-option:focus { background: #2a2a2a; color: #ffc800; }
+.addr-chosen { margin: 0 0 16px; padding: 12px; border: 1px solid #444; background: #1a1a1a; font-size: 15px; }
+.addr-manual { margin-top: 8px; }
+.addr-manual[hidden], .addr-list[hidden], .addr-chosen[hidden] { display: none; }
+.cart-field[hidden], .cart-input[hidden] { display: none; }

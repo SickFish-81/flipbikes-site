@@ -29,14 +29,20 @@ function writes to the response body is ever displayed.
 
 ## The shop (ecommerce)
 
-Customers add chocks to a cart on the home page, pick New Zealand or
-Australia, and pay on Stripe's hosted checkout page. Card details never touch
+Customers add chocks to a cart on the home page, enter their delivery address
+(Google address search, or typed in by hand), see the shipping price including
+any rural surcharge, and pay on Stripe's hosted checkout page. Card details never touch
 this site. After payment Stripe calls the webhook, which takes the stock off,
 emails Craig what to ship, and emails the customer a confirmation.
 
-    api/_lib/catalog.js   products, PRICES and SHIPPING RATES (edit here only)
+    api/_lib/catalog.js   products and PRICES (edit here only)
+    api/_lib/shipping.js  SHIPPING RATE TABLE + rural postcode list (edit here only)
+    api/_lib/places.js    Google Places lookups (server-side; key never reaches the browser)
+    api/_lib/order.js     prices a cart + address; shared by quote and checkout
     api/_lib/db.js        tiny Supabase client for stock + the order log
     api/shop.js           GET  - what the browser shows (prices, stock, on/off)
+    api/address-suggest.js GET - address suggestions as the customer types
+    api/quote.js          POST - live shipping price for the cart page
     api/checkout.js       POST - validates the cart, creates the Stripe session
     api/stripe-webhook.js POST - Stripe says "paid": stock, emails, order log
     supabase/flip_shop.sql  run once in the Supabase SQL editor
@@ -58,6 +64,9 @@ link - so merging this changes nothing on the live site by itself.
    - `STRIPE_SECRET_KEY`        (use a `sk_test_...` key while testing)
    - `STRIPE_WEBHOOK_SECRET`    (`whsec_...`, from the webhook endpoint below)
    - `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
+   - `GOOGLE_MAPS_API_KEY`      (optional; enables address search. Restrict it to
+     "Places API (New)" in Google Cloud and set a daily quota cap. Without it the
+     cart page shows plain address fields instead)
    - `RESEND_API_KEY` is already used by the contact form
    Scope the test keys to **Preview** only, and the live keys to **Production**.
 3. In Stripe > Developers > Webhooks add an endpoint
@@ -70,10 +79,21 @@ link - so merging this changes nothing on the live site by itself.
 If Supabase isn't configured the shop still takes payments and sends emails;
 it just can't track stock or ignore a duplicate webhook.
 
+### Shipping
+
+There is no courier API behind this: NZ Couriers' own API needs 100+ parcels a
+day. `api/_lib/shipping.js` is a hand-kept rate table that mirrors how the
+courier charges - a base rate by island, a little extra per additional item, and
+a rural surcharge that is passed on to the customer. An address counts as rural
+if its postcode is in `RURAL_POSTCODES` or it contains an "RD 2"-style number.
+The order email to Craig says whether rural was applied, and whether the address
+was typed in rather than verified by Google, so he can double-check before booking.
+
 ### Things that are guesses and need Craig
-- Shipping: flat $15 NZ / $60 AU per order (`SHIPPING` in `catalog.js`).
-- Whether "Tie Downs" $59.50 and "D Rings" $25.00 are per item or per set.
-- Real stock counts.
+- Every rate in `shipping.js`, and the rural postcode list (empty right now, so
+  only "RD n" addresses are caught). NZ Couriers publishes a rural list.
+- Whether "Tie Downs" $59.50 and "D Rings" $25.00 are per item or per set (minor).
+- Real stock counts, and prices (due to be revisited).
 
 ## What was deliberately left behind
 

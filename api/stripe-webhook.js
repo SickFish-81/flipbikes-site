@@ -67,9 +67,15 @@ export function itemsFromMetadata(str) {
 
 function buildEmails(order, remaining) {
   const a = order.address || {};
-  const addr = [a.line1, a.line2, [a.city, a.state].filter(Boolean).join(" "), a.postal_code, a.country]
-    .filter(Boolean)
-    .join("\n");
+  const addr = a.formatted
+    ? a.formatted.split(", ").join("\n") + (a.note ? `\n(Delivery note: ${a.note})` : "")
+    : [a.line1, a.line2, [a.city, a.state].filter(Boolean).join(" "), a.postal_code, a.country].filter(Boolean).join("\n");
+  const typedLine = a.typed ? "  Address was typed in by the customer, not checked against Google Maps - give it a look.\n" : "";
+  const ruralLine = typedLine + (a.formatted
+    ? (a.rural
+        ? "  Rural delivery: YES - the rural surcharge was charged to the customer.\n"
+        : "  Rural delivery: not flagged by our table. Worth a quick check on NZ Couriers' address tool before booking.\n")
+    : "");
   const lines = order.items
     .map((i) => `  ${i.qty} x ${i.name}` + (i.unit_amount != null ? `  @ ${money(i.unit_amount)}` : ""))
     .join("\n");
@@ -84,7 +90,7 @@ function buildEmails(order, remaining) {
   const craig =
     `New Flip Bikes order - paid.\n\n` +
     `Items:\n${lines}\n${totals}\n\n` +
-    `Ship to:\n  ${order.name || "(no name)"}\n${addr ? addr.split("\n").map((l) => "  " + l).join("\n") : "  (no address)"}\n\n` +
+    `Ship to:\n  ${order.name || "(no name)"}\n${addr ? addr.split("\n").map((l) => "  " + l).join("\n") : "  (no address)"}\n${ruralLine}\n` +
     `Contact:\n  Email: ${order.email || "(none)"}\n  Phone: ${order.phone || "(none)"}\n\n` +
     (low.length ? `Stock now low:\n${low.join("\n")}\n\n` : "") +
     `Stripe: https://dashboard.stripe.com/payments/${order.payment_intent || ""}\n` +
@@ -134,18 +140,23 @@ export default async function handler(req, res) {
   const s = event.data?.object || {};
   if (s.payment_status && s.payment_status !== "paid") return res.status(200).send("Not paid yet");
 
-  // Newer Stripe API versions moved shipping under collected_information.
+  // Name, phone and address were collected on OUR cart page and ride along in
+  // metadata. Older sessions (or ones started elsewhere) fall back to whatever
+  // Stripe collected itself.
+  const m = s.metadata || {};
   const shipping = s.collected_information?.shipping_details || s.shipping_details || {};
   const details = s.customer_details || {};
   const order = {
     session_id: s.id,
     payment_intent: s.payment_intent,
-    name: shipping.name || details.name || null,
-    email: details.email || null,
-    phone: details.phone || null,
-    country: s.metadata?.country || shipping.address?.country || null,
-    address: shipping.address || details.address || null,
-    items: itemsFromMetadata(s.metadata?.items),
+    name: m.name || shipping.name || details.name || null,
+    email: details.email || s.customer_email || null,
+    phone: m.phone || details.phone || null,
+    country: m.country || shipping.address?.country || null,
+    address: m.addr
+      ? { formatted: m.addr, postcode: m.postcode || null, rural: m.rural === "yes", note: m.note || null, typed: m.addr_source === "manual" }
+      : shipping.address || details.address || null,
+    items: itemsFromMetadata(m.items),
     amount_total: s.amount_total ?? null,
     shipping_amount: s.total_details?.amount_shipping ?? null,
   };

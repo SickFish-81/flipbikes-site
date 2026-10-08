@@ -1,5 +1,5 @@
 // The shop's single source of truth: what is for sale, what it costs, and
-// what shipping costs. The browser NEVER decides a price — /api/checkout
+// (shipping is in shipping.js). The browser NEVER decides a price — /api/checkout
 // looks every item up here, so a tampered cart can't buy a chock for $1.
 //
 // All amounts are in CENTS, NZD, and GST-INCLUSIVE (NZ consumer prices are
@@ -17,14 +17,7 @@ export const PRODUCTS = [
   { sku: "d-rings",           name: "D Rings",                  price: 2500 },
 ];
 
-// ---------------------------------------------------------------------------
-// !!! PLACEHOLDER SHIPPING RATES — Craig needs to confirm these !!!
-// Flat rate per ORDER, by destination. They are guesses, not quotes.
-// ---------------------------------------------------------------------------
-export const SHIPPING = {
-  NZ: { label: "Courier - New Zealand", amount: 1500 },
-  AU: { label: "Courier - Australia", amount: 6000 },
-};
+// Shipping is priced per order from the destination: see shipping.js.
 
 export const MAX_QTY_PER_LINE = 20;
 
