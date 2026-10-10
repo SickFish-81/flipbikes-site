@@ -73,10 +73,18 @@ function buildEmails(order, remaining, inv) {
     ? a.formatted.split(", ").join("\n") + (a.note ? `\n(Delivery note: ${a.note})` : "")
     : [a.line1, a.line2, [a.city, a.state].filter(Boolean).join(" "), a.postal_code, a.country].filter(Boolean).join("\n");
   const typedLine = a.typed ? "  Address was typed in by the customer, not checked against Google Maps - give it a look.\n" : "";
+  // Say HOW rural was decided, not just whether. "The customer told us" and
+  // "we found RD 2 in the address" deserve different amounts of trust, and
+  // NZ Couriers' own rural definition is not one we can check from here.
+  const WHY = {
+    declared: "the CUSTOMER ticked the rural box",
+    address: "we found an RD number in the address",
+    postcode: "the postcode is in our rural list",
+  };
   const ruralLine = typedLine + (a.formatted
     ? (a.rural
-        ? "  Rural delivery: YES - the rural surcharge was charged to the customer.\n"
-        : "  Rural delivery: not flagged by our table. Worth a quick check on NZ Couriers' address tool before booking.\n")
+        ? `  Rural delivery: YES - surcharge charged to the customer (${WHY[a.ruralWhy] || "flagged by our table"}).\n`
+        : "  Rural delivery: not flagged. Worth a quick check on NZ Couriers' address tool before booking.\n")
     : "");
   const lines = order.items
     .map((i) => `  ${i.qty} x ${i.name}` + (i.unit_amount != null ? `  @ ${money(i.unit_amount)}` : ""))
@@ -156,7 +164,7 @@ export default async function handler(req, res) {
     phone: m.phone || details.phone || null,
     country: m.country || shipping.address?.country || null,
     address: m.addr
-      ? { formatted: m.addr, postcode: m.postcode || null, rural: m.rural === "yes", note: m.note || null, typed: m.addr_source === "manual" }
+      ? { formatted: m.addr, postcode: m.postcode || null, rural: m.rural === "yes", ruralWhy: m.rural_why || null, note: m.note || null, typed: m.addr_source === "manual" }
       : shipping.address || details.address || null,
     items: itemsFromMetadata(m.items),
     amount_total: s.amount_total ?? null,

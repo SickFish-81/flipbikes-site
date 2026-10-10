@@ -46,3 +46,12 @@
 .addr-manual { margin-top: 8px; }
 .addr-manual[hidden], .addr-list[hidden], .addr-chosen[hidden] { display: none; }
 .cart-field[hidden], .cart-input[hidden] { display: none; }
+
+/* The rural question. A checkbox, so unlike every other field the label sits
+   BESIDE the box rather than above it, and the hint lines up under the label
+   text instead of under the box. */
+.cart-field-check { display: grid; grid-template-columns: auto 1fr; gap: 0 10px; align-items: center; cursor: pointer; }
+.cart-field-check > span { display: block; margin: 0; }
+.cart-field-check small { grid-column: 2; margin-top: 4px; }
+.cart-field-check[hidden] { display: none; }
+.cart-check { width: 20px; height: 20px; margin: 0; accent-color: #ffc800; }

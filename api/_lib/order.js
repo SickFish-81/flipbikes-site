@@ -39,7 +39,7 @@ export async function resolveAddress(country, input, sessionToken) {
 }
 
 // -> { lines, address, shipping } or { error, status }
-export async function priceOrder({ items, country, address: addressInput, sessionToken }) {
+export async function priceOrder({ items, country, address: addressInput, sessionToken, declaredRural = false }) {
   const cart = parseCart(items);
   if (cart.error) return { error: cart.error, status: 400 };
   if (country !== "NZ" && country !== "AU") return { error: "Please choose a delivery country.", status: 400 };
@@ -53,6 +53,7 @@ export async function priceOrder({ items, country, address: addressInput, sessio
     postcode: resolved.address.postcode,
     text: resolved.address.formatted,
     itemCount,
+    declaredRural: declaredRural === true,
   });
   if (shipping.error) return { error: shipping.error, status: 400 };
   return { lines: cart.lines, address: resolved.address, shipping };

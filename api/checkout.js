@@ -3,7 +3,7 @@
 // payment page, so card details never touch this site.
 //
 // Body: { items: [{sku, qty}], country, address: {placeId}|{manual}, sessionToken,
-//         name, email, phone, note }
+//         name, email, phone, note, ruralDeclared }
 // Reply: { url } on success, { error } with a 4xx/5xx otherwise.
 //
 // The delivery address is collected on OUR cart page (so the shipping price,
@@ -41,6 +41,10 @@ export default async function handler(req, res) {
     country: String(body.country ?? ""),
     address: body.address,
     sessionToken: body.sessionToken,
+    // The customer ticking "this is a rural delivery address". Additive only —
+    // see quoteShipping. Re-priced here, so the browser cannot talk its way
+    // OUT of a surcharge by leaving it off.
+    declaredRural: body.ruralDeclared === true,
   });
   if (order.error) return res.status(order.status || 400).json({ error: order.error });
   const { lines, address, shipping } = order;
@@ -103,6 +107,9 @@ export default async function handler(req, res) {
   p.set("metadata[addr]", address.formatted.slice(0, 480));
   p.set("metadata[postcode]", address.postcode);
   p.set("metadata[rural]", shipping.rural ? "yes" : "no");
+  // How we decided: postcode table, "RD n" in the address, or the customer
+  // said so. Craig needs this to know whether to double-check before booking.
+  if (shipping.ruralReason) p.set("metadata[rural_why]", shipping.ruralReason);
   p.set("metadata[addr_source]", address.source);
   if (note) p.set("metadata[note]", note);
 

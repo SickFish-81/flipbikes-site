@@ -99,13 +99,33 @@ There is no courier API behind this: NZ Couriers' own API needs 100+ parcels a
 day. `api/_lib/shipping.js` is a hand-kept rate table that mirrors how the
 courier charges - a base rate by island, a little extra per additional item, and
 a rural surcharge that is passed on to the customer. An address counts as rural
-if its postcode is in `RURAL_POSTCODES` or it contains an "RD 2"-style number.
-The order email to Craig says whether rural was applied, and whether the address
-was typed in rather than verified by Google, so he can double-check before booking.
+if its postcode is in `RURAL_POSTCODES`, it contains an "RD 2"-style number, or
+**the customer ticks "this is a rural delivery address" on the cart page** —
+which exists because we cannot work it out and they can. That tick is ADDITIVE
+ONLY: leaving it off can never cancel a rural address we detected, or a customer
+could opt out of a surcharge the courier charges Craig regardless.
+
+The order email to Craig says **how** rural was decided — the customer ticked it,
+an RD number was found, or the postcode table matched — and whether the address
+was typed in rather than verified by Google, so he can judge how far to trust it
+before booking.
 
 ### Things that are guesses and need Craig
-- Every rate in `shipping.js`, and the rural postcode list (empty right now, so
-  only "RD n" addresses are caught). NZ Couriers publishes a rural list.
+- **Every rate in `shipping.js`.** An earlier note here was wrong: **NZ Couriers
+  do not publish a rural list.** Researched 10 Oct 2026 — they define rural as
+  *"those that sit outside our regularly serviced areas"*, warn it *"may differ
+  from the rural classification of other courier and postal companies"*, and
+  offer only an Address Checker, one address at a time. The one public NZ rural
+  postcode list is NZ **Post's**, a different carrier's definition, so loading it
+  would surcharge customers NZ Couriers delivers at urban rates.
+  `RURAL_POSTCODES` is therefore deliberately empty — fill it only from data NZ
+  Couriers gave Craig for his own account.
+- **NZ Couriers charge by THREE zones and this code models two.** Business
+  (high-density), Residential (low-density: homes) and Rural/Non-Urban. We sell
+  to people at home, i.e. Residential, which may carry its own surcharge on
+  Craig's account — in which case every order under-collects, not just the rural
+  ones. Ask him for his rate card across all three zones and both islands, plus
+  the per-extra-item cost and any cap.
 - Whether "Tie Downs" $59.50 and "D Rings" $25.00 are per item or per set (minor).
 - Real stock counts, and prices (due to be revisited).
 

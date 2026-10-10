@@ -106,7 +106,7 @@
   //
   // Built once, then updated in place, so changing a quantity never wipes the
   // delivery details the customer has already typed.
-  var ui = { country: "NZ", addr: null, quote: null, quoteError: "", token: "", seq: 0, timer: null };
+  var ui = { country: "NZ", addr: null, quote: null, quoteError: "", token: "", seq: 0, timer: null, rural: false };
 
   function newToken() {
     return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
@@ -115,6 +115,15 @@
     return el("label", { class: "cart-field" }, [el("span", { text: label }), input, hint ? el("small", { text: hint }) : null]);
   }
   function inputEl(attrs) { attrs["class"] = "cart-input"; return el("input", attrs); }
+  // A checkbox reads back-to-front in the `field()` layout (label above the
+  // control), so it gets its own row with the label beside the box.
+  function checkField(id, labelText, hint) {
+    var box = el("input", { id: id, type: "checkbox", class: "cart-check" });
+    var row = el("label", { class: "cart-field cart-field-check", for: id }, [
+      box, el("span", { text: labelText }), hint ? el("small", { text: hint }) : null
+    ]);
+    return { box: box, row: row };
+  }
 
   function cartIsEmpty(root, message, linkHref, linkText) {
     root.textContent = "";
@@ -195,6 +204,20 @@
       field("Suburb (optional)", m.suburb), field("Town / city", m.city), field("Postcode", m.postcode)
     ]);
     if (!search) manualBox.removeAttribute("hidden");
+    // We cannot tell a rural address from a postcode: NZ Couriers define rural
+    // as "outside our regularly serviced areas" and publish no list. The
+    // customer knows. Ticking this ADDS the surcharge; leaving it off cannot
+    // remove one we detected from an RD number (see api/_lib/shipping.js).
+    var ruralCheck = checkField(
+      "d-rural",
+      "This is a rural delivery address",
+      "Tick if your address has an RD number. Rural delivery costs the courier more and we have to pass it on."
+    );
+    ruralCheck.box.addEventListener("change", function () {
+      ui.rural = ruralCheck.box.checked;
+      refreshQuote();
+    });
+
     var manualToggle = el("button", { type: "button", class: "cart-remove", text: "Can't find it? Enter it manually" });
     manualToggle.addEventListener("click", function () { manualBox.removeAttribute("hidden"); manualToggle.hidden = true; });
 
@@ -203,7 +226,16 @@
       ui.token = newToken(); lookup.value = ""; chosen.hidden = true; lookup.parentNode.hidden = false; setAddress(null);
     }
 
-    country.addEventListener("change", function () { ui.country = country.value; write(COUNTRY_KEY, ui.country); resetAddress(); });
+    // Australia is a flat rate, so the rural question is meaningless there.
+    function syncRuralVisibility() {
+      var show = ui.country === "NZ";
+      ruralCheck.row.hidden = !show;
+      if (!show && ruralCheck.box.checked) { ruralCheck.box.checked = false; ui.rural = false; }
+    }
+
+    country.addEventListener("change", function () {
+      ui.country = country.value; write(COUNTRY_KEY, ui.country); syncRuralVisibility(); resetAddress();
+    });
 
     // suggestions while typing
     var typing = null;
@@ -253,6 +285,7 @@
       search ? chosen : null,
       search ? manualToggle : null,
       manualBox,
+      ruralCheck.row,
       field("Delivery note (optional)", note)
     ]));
 
@@ -272,6 +305,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           items: getCart(), country: ui.country, address: ui.addr, sessionToken: ui.token,
+          ruralDeclared: ui.rural,
           name: name.value, email: email.value, phone: phone.value, note: note.value
         })
       }).then(function (r) {
@@ -287,6 +321,7 @@
     root.appendChild(error);
     root.appendChild(pay);
     root.appendChild(el("p", { class: "cart-fine", text: "You'll be taken to Stripe's secure page to pay. Questions? Call Craig on +64 021 0832 7787." }));
+    syncRuralVisibility();
   }
 
   // Live shipping for the current cart + address, then redraw the totals.
@@ -296,7 +331,7 @@
     ui.quote = null; drawSummary(true);
     fetch("/api/quote", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: getCart(), country: ui.country, address: ui.addr, sessionToken: ui.token })
+      body: JSON.stringify({ items: getCart(), country: ui.country, address: ui.addr, sessionToken: ui.token, ruralDeclared: ui.rural })
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
         if (mySeq !== ui.seq) return; // a newer change superseded this one

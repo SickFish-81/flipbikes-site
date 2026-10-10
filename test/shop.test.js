@@ -158,6 +158,47 @@ test("shipping: rural surcharge is added for an RD address and flagged for Craig
   assert.match(stripeBody().get("shipping_options[0][shipping_rate_data][display_name]"), /rural/);
 });
 
+test("shipping: the customer can declare a rural address, and it only ever ADDS the surcharge", async () => {
+  // No RD number anywhere and the postcode table is empty, so we cannot tell.
+  await post(checkout, order({ address: manual("3800") }));
+  assert.equal(shipAmount(), "1200");
+  calls.length = 0;
+
+  // The customer ticks the box: surcharge applied, and we record that THEY
+  // said so rather than pretending we worked it out.
+  await post(checkout, order({ address: manual("3800"), ruralDeclared: true }));
+  assert.equal(shipAmount(), "2200");
+  assert.equal(stripeBody().get("metadata[rural]"), "yes");
+  assert.equal(stripeBody().get("metadata[rural_why]"), "declared");
+  calls.length = 0;
+
+  // Leaving it off must NOT cancel a rural address we detected ourselves, or a
+  // customer could opt out of a surcharge the courier charges Craig anyway.
+  await post(checkout, order({ address: manual("3874", { line1: "456 Hautapu Rd, RD 2" }), ruralDeclared: false }));
+  assert.equal(shipAmount(), "2200");
+  assert.equal(stripeBody().get("metadata[rural_why]"), "address");
+});
+
+test("shipping: declaring rural does nothing for Australia, which is a flat rate", async () => {
+  await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }), ruralDeclared: true }));
+  assert.equal(shipAmount(), "6000");
+  assert.equal(stripeBody().get("metadata[rural]"), "no");
+  assert.equal(stripeBody().get("metadata[rural_why]"), null);
+});
+
+test("shipping: \"Rural Delivery 3\" spelled out is caught as well as \"RD 3\"", async () => {
+  await post(checkout, order({ address: manual("3800", { line1: "7 Pine Lane, Rural Delivery 3" }) }));
+  assert.equal(shipAmount(), "2200");
+  assert.equal(stripeBody().get("metadata[rural_why]"), "address");
+});
+
+test("quote: the cart page is told WHY it is rural, so it can explain the surcharge", async () => {
+  const r = await post(quote, { items: [{ sku: "flip-g3", qty: 1 }], country: "NZ", address: manual("3800"), ruralDeclared: true });
+  assert.equal(r.body.amount, 2200);
+  assert.equal(r.body.rural, true);
+  assert.equal(r.body.ruralReason, "declared");
+});
+
 test("shipping: Chatham Islands asks the customer to contact us", async () => {
   const r = await post(checkout, order({ address: manual("8942") }));
   assert.equal(r.code, 400);
@@ -346,6 +387,16 @@ test("webhook: a paid order takes stock off, emails Craig and the customer", asy
   assert.match(craig.text, /TOTAL PAID: \$365\.00/);
   assert.equal(cust.to[0], "pat@example.com");
   assert.match(cust.text, /payment has been received/);
+});
+
+test("webhook: Craig's email says HOW rural was decided, not just that it was", async () => {
+  const meta = {
+    items: "flip-g3:1", country: "NZ", name: "Pat Rider", phone: "021123456",
+    addr: "9 Pine Lane, Te Awamutu, 3800, New Zealand", postcode: "3800",
+    rural: "yes", rural_why: "declared",
+  };
+  await deliver(event({ metadata: meta }));
+  assert.match(emails()[0].text, /Rural delivery: YES.*CUSTOMER ticked the rural box/);
 });
 
 test("webhook: Stripe delivering the same event twice does not double-take stock or double-email", async () => {
