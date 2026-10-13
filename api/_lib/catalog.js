@@ -8,14 +8,22 @@
 // The prices below are the "special price" figures currently shown on
 // public/index.html. Change a price here and nowhere else.
 
+// `size` decides which freight rate applies, and it is the ONLY thing in here
+// that isn't money. "small" means the item goes in a courier BAG — a satchel,
+// flat-rated nationwide up to 3kg — instead of a carton. See shipping.js.
+//
+// A product with no `size` is treated as "large", deliberately: a new item can
+// never accidentally inherit the cheap rate by someone forgetting a field.
 export const PRODUCTS = [
-  { sku: "flip-starter-pack", name: "FLIP Starter Pack (1x Standard chock, 2x D rings, 2x tie-downs)", price: 27000 },
-  { sku: "flip-g3",           name: "FLIP G3 Bike Chock",       price: 17900 },
-  { sku: "flip-standard",     name: "FLIP Standard Bike Chock", price: 15000 },
-  { sku: "flip-road",         name: "FLIP Road Bike Chock",     price: 24900 },
-  { sku: "tie-downs",         name: "Tie Downs",                price: 5950 },
-  { sku: "d-rings",           name: "D Rings",                  price: 2500 },
+  { sku: "flip-starter-pack", name: "FLIP Starter Pack (1x Standard chock, 2x D rings, 2x tie-downs)", price: 27000, size: "large" },
+  { sku: "flip-g3",           name: "FLIP G3 Bike Chock",       price: 17900, size: "large" },
+  { sku: "flip-standard",     name: "FLIP Standard Bike Chock", price: 15000, size: "large" },
+  { sku: "flip-road",         name: "FLIP Road Bike Chock",     price: 24900, size: "large" },
+  { sku: "tie-downs",         name: "Tie Downs",                price: 5950,  size: "small" },
+  { sku: "d-rings",           name: "D Rings",                  price: 2500,  size: "small" },
 ];
+
+export const isSmall = (product) => product?.size === "small";
 
 // Shipping is priced per order from the destination: see shipping.js.
 

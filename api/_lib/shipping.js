@@ -34,6 +34,21 @@ export const RATES = {
   maxExtra: 2400,       // ...up to this much in total (caps at 3 extra items)
   ruralSurcharge: 700,  // added when the address is rural
   au: 6000,             // flat, Australia — UNVERIFIED, international is dear
+
+  // A bag, not a carton. An order of nothing but small items (see catalog.js)
+  // goes in a courier satchel, and a satchel is flat-rated NATIONWIDE — there
+  // is no Cook Strait premium on a bag, which is why this one rate replaces
+  // BOTH nzNorth and nzSouth rather than sitting alongside them.
+  //
+  // Anchored on NZ Post's 2026 retail bag+ticket bundles, 3kg max:
+  //   XS bag (135 x 240mm) ... $9.10 each    S bag (190 x 280mm) ... $10.40
+  //   M  bag (257 x 325mm) ... $12.40
+  // $8.00 is those with the same account discount assumed elsewhere here.
+  //
+  // Without this, a $25 set of D Rings to Dunedin was quoted $28 freight —
+  // more than the product. Nobody was ever going to buy that.
+  smallNz: 800,
+  smallMaxItems: 4,     // past this it stops being one bag; fall back to a carton
 };
 
 // Postcodes NZ Couriers treats as rural delivery.
@@ -66,7 +81,14 @@ const CONTACT_US_POSTCODES = new Set(["8942"]); // Chatham Islands
 // sometimes spelled out in full.
 const RD_PATTERN = /\b(?:R\.?\s?D\.?|RURAL\s+DELIVERY)\s?\d{1,2}\b/i;
 
-export function quoteShipping({ country, postcode, text = "", itemCount, declaredRural = false }) {
+// `itemCount` is everything in the cart; `largeCount` is just the chocks.
+// order.js splits them, so this file stays ignorant of the catalog's shape.
+//
+// The split matters twice over:
+//   - all small and few enough  -> one bag, one flat price
+//   - otherwise                 -> a carton, and ONLY the chocks add to it,
+//     because accessories ride along in a box that is going anyway
+export function quoteShipping({ country, postcode, text = "", itemCount, largeCount = itemCount, declaredRural = false }) {
   if (country === "AU") {
     return { amount: RATES.au, label: "Courier - Australia", rural: false, ruralReason: null, region: "AU" };
   }
@@ -79,7 +101,17 @@ export function quoteShipping({ country, postcode, text = "", itemCount, declare
 
   // NZ postcodes: 0000-6999 North Island, 7000-9999 South Island.
   const north = Number(postcode) < 7000;
-  const extra = Math.min(Math.max(itemCount - 1, 0) * RATES.extraItem, RATES.maxExtra);
+
+  // One bag, one flat price, no island split and no per-item extra — the
+  // whole point of a satchel is that everything goes in the one bag.
+  const bag = largeCount === 0 && itemCount <= RATES.smallMaxItems;
+  const base = bag ? RATES.smallNz : north ? RATES.nzNorth : RATES.nzSouth;
+
+  // Per-item extra counts CHOCKS only. A chock is its own parcel; a set of
+  // D rings is not, so it must not trigger a second ticket. This also stops
+  // the cliff the bag rate would otherwise create: without it, four sets of
+  // tie-downs cost $8 and five cost $52.
+  const extra = bag ? 0 : Math.min(Math.max(largeCount - 1, 0) * RATES.extraItem, RATES.maxExtra);
 
   // Three ways an address can be rural, and we record WHICH, because Craig
   // needs to know whether to trust it before he books the ticket.
@@ -94,13 +126,16 @@ export function quoteShipping({ country, postcode, text = "", itemCount, declare
     : declaredRural               ? "declared"
     : null;
   const rural = ruralReason !== null;
-  const amount = (north ? RATES.nzNorth : RATES.nzSouth) + extra + (rural ? RATES.ruralSurcharge : 0);
+  // Rural still applies to a bag: the courier charges rural delivery per item
+  // whatever it is packed in.
+  const amount = base + extra + (rural ? RATES.ruralSurcharge : 0);
 
   return {
     amount,
     label: "Courier - New Zealand" + (rural ? " (rural delivery)" : ""),
     rural,
     ruralReason,
+    bag,
     region: north ? "NZ-North" : "NZ-South",
   };
 }

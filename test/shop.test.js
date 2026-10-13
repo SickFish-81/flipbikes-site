@@ -23,6 +23,7 @@ const SOUTH = RATES.nzSouth;
 const RURAL = RATES.ruralSurcharge;
 const AU = RATES.au;
 const extras = (n) => Math.min(n * RATES.extraItem, RATES.maxExtra);
+const BAG = RATES.smallNz;
 
 const calls = [];
 let fakeStock;     // what the fake DB's flip_stock holds
@@ -160,6 +161,59 @@ test("shipping: North vs South Island, extra items, Australia", async () => {
   await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }) }));
   assert.equal(shipAmount(), String(AU));
   assert.equal(stripeBody().get("payment_intent_data[shipping][address][country]"), "AU");
+});
+
+test("shipping: an all-small order ships as a flat-rate bag, nationwide", async () => {
+  // The bug this fixes: D Rings cost $25, and the South Island carton rate is
+  // $28 — the freight was dearer than the product.
+  await post(checkout, order({ items: [{ sku: "d-rings", qty: 1 }] }));
+  assert.equal(shipAmount(), String(BAG));
+  calls.length = 0;
+
+  // Same price to the South Island: a satchel doesn't pay a Cook Strait premium.
+  await post(checkout, order({ items: [{ sku: "d-rings", qty: 1 }], address: manual("9300") }));
+  assert.equal(shipAmount(), String(BAG));
+  calls.length = 0;
+
+  // Several small items still make one bag — no per-item extra.
+  // (d-rings has 1 in the fake stock; tie-downs is untracked, so it carries qty.)
+  await post(checkout, order({ items: [{ sku: "d-rings", qty: 1 }, { sku: "tie-downs", qty: 3 }] }));
+  assert.equal(shipAmount(), String(BAG));
+});
+
+test("shipping: a bag is cheaper than the carton it replaces", async () => {
+  await post(checkout, order({ items: [{ sku: "d-rings", qty: 1 }], address: manual("9300") }));
+  const bagged = Number(shipAmount());
+  calls.length = 0;
+  await post(checkout, order({ items: [{ sku: "flip-g3", qty: 1 }], address: manual("9300") }));
+  assert.ok(bagged < Number(shipAmount()), "small-item rate must undercut the South Island carton rate");
+});
+
+test("shipping: a mixed cart is a carton, and the accessory rides in it free", async () => {
+  await post(checkout, order({ items: [{ sku: "d-rings", qty: 1 }, { sku: "flip-g3", qty: 1 }] }));
+  assert.equal(shipAmount(), String(NORTH));   // one chock, one carton, no extra
+});
+
+test("shipping: only chocks add a per-item charge", async () => {
+  await post(checkout, order({ items: [{ sku: "flip-g3", qty: 2 }, { sku: "tie-downs", qty: 3 }] }));
+  assert.equal(shipAmount(), String(NORTH + extras(1)));  // 2 chocks = 1 extra, ties free
+});
+
+test("shipping: too many small items becomes a carton, without a per-item cliff", async () => {
+  // The trap this guards: 4 sets of tie-downs cost $8, so 5 must not cost $52.
+  const qty = RATES.smallMaxItems + 1;
+  await post(checkout, order({ items: [{ sku: "tie-downs", qty }] }));
+  assert.equal(shipAmount(), String(NORTH));
+  assert.ok(Number(shipAmount()) < RATES.smallNz + RATES.extraItem * qty);
+});
+
+test("shipping: rural is still charged on a bag", async () => {
+  await post(checkout, order({
+    items: [{ sku: "d-rings", qty: 1 }],
+    address: manual("3874", { line1: "456 Hautapu Rd, RD 2" }),
+  }));
+  assert.equal(shipAmount(), String(BAG + RURAL));
+  assert.equal(stripeBody().get("metadata[rural]"), "yes");
 });
 
 test("shipping: rural surcharge is added for an RD address and flagged for Craig", async () => {

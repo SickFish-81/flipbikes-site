@@ -3,7 +3,7 @@
 // (the real thing), so the number the customer SAW is the number they're
 // charged — both run exactly this.
 
-import { parseCart } from "./catalog.js";
+import { parseCart, isSmall } from "./catalog.js";
 import { quoteShipping } from "./shipping.js";
 import { details, placesConfigured } from "./places.js";
 
@@ -48,11 +48,16 @@ export async function priceOrder({ items, country, address: addressInput, sessio
   if (resolved.error) return { error: resolved.error, status: 400 };
 
   const itemCount = cart.lines.reduce((s, l) => s + l.qty, 0);
+  // Chocks only. No chocks at all => the order can go in a bag; and however it
+  // ships, accessories never add a per-item charge, because they travel in a
+  // carton that is going anyway. See quoteShipping.
+  const largeCount = cart.lines.reduce((s, l) => s + (isSmall(l.product) ? 0 : l.qty), 0);
   const shipping = quoteShipping({
     country,
     postcode: resolved.address.postcode,
     text: resolved.address.formatted,
     itemCount,
+    largeCount,
     declaredRural: declaredRural === true,
   });
   if (shipping.error) return { error: shipping.error, status: 400 };
