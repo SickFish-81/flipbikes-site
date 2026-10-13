@@ -12,6 +12,17 @@ import quote from "../api/quote.js";
 import suggest from "../api/address-suggest.js";
 import webhook, { verifySignature, itemsFromMetadata } from "../api/stripe-webhook.js";
 import { gstFromInclusive } from "../api/_lib/invoice.js";
+import { RATES } from "../api/_lib/shipping.js";
+
+// Expectations are DERIVED from the rate table, never hard-coded, so that
+// changing Craig's rates doesn't break seven tests that still pass in spirit.
+// What these tests guard is the BEHAVIOUR: which region, whether rural was
+// detected and why, how extras accumulate and cap.
+const NORTH = RATES.nzNorth;
+const SOUTH = RATES.nzSouth;
+const RURAL = RATES.ruralSurcharge;
+const AU = RATES.au;
+const extras = (n) => Math.min(n * RATES.extraItem, RATES.maxExtra);
 
 const calls = [];
 let fakeStock;     // what the fake DB's flip_stock holds
@@ -138,22 +149,22 @@ test("checkout: delivery details ride along to Stripe and the webhook", async ()
 
 test("shipping: North vs South Island, extra items, Australia", async () => {
   await post(checkout, order());                                   // 1 item, North
-  assert.equal(shipAmount(), "1200");
+  assert.equal(shipAmount(), String(NORTH));
   calls.length = 0;
   await post(checkout, order({ address: manual("9300") }));        // 1 item, South
-  assert.equal(shipAmount(), "1500");
+  assert.equal(shipAmount(), String(SOUTH));
   calls.length = 0;
-  await post(checkout, order({ items: [{ sku: "flip-g3", qty: 3 }] })); // 3 items: +2 x $3
-  assert.equal(shipAmount(), "1800");
+  await post(checkout, order({ items: [{ sku: "flip-g3", qty: 3 }] })); // 3 items: two extras
+  assert.equal(shipAmount(), String(NORTH + extras(2)));
   calls.length = 0;
   await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }) }));
-  assert.equal(shipAmount(), "6000");
+  assert.equal(shipAmount(), String(AU));
   assert.equal(stripeBody().get("payment_intent_data[shipping][address][country]"), "AU");
 });
 
 test("shipping: rural surcharge is added for an RD address and flagged for Craig", async () => {
   await post(checkout, order({ address: manual("3874", { line1: "456 Hautapu Rd, RD 2" }) }));
-  assert.equal(shipAmount(), "2200"); // 1200 + 1000 rural
+  assert.equal(shipAmount(), String(NORTH + RURAL));
   assert.equal(stripeBody().get("metadata[rural]"), "yes");
   assert.match(stripeBody().get("shipping_options[0][shipping_rate_data][display_name]"), /rural/);
 });
@@ -161,13 +172,13 @@ test("shipping: rural surcharge is added for an RD address and flagged for Craig
 test("shipping: the customer can declare a rural address, and it only ever ADDS the surcharge", async () => {
   // No RD number anywhere and the postcode table is empty, so we cannot tell.
   await post(checkout, order({ address: manual("3800") }));
-  assert.equal(shipAmount(), "1200");
+  assert.equal(shipAmount(), String(NORTH));
   calls.length = 0;
 
   // The customer ticks the box: surcharge applied, and we record that THEY
   // said so rather than pretending we worked it out.
   await post(checkout, order({ address: manual("3800"), ruralDeclared: true }));
-  assert.equal(shipAmount(), "2200");
+  assert.equal(shipAmount(), String(NORTH + RURAL));
   assert.equal(stripeBody().get("metadata[rural]"), "yes");
   assert.equal(stripeBody().get("metadata[rural_why]"), "declared");
   calls.length = 0;
@@ -175,26 +186,26 @@ test("shipping: the customer can declare a rural address, and it only ever ADDS 
   // Leaving it off must NOT cancel a rural address we detected ourselves, or a
   // customer could opt out of a surcharge the courier charges Craig anyway.
   await post(checkout, order({ address: manual("3874", { line1: "456 Hautapu Rd, RD 2" }), ruralDeclared: false }));
-  assert.equal(shipAmount(), "2200");
+  assert.equal(shipAmount(), String(NORTH + RURAL));
   assert.equal(stripeBody().get("metadata[rural_why]"), "address");
 });
 
 test("shipping: declaring rural does nothing for Australia, which is a flat rate", async () => {
   await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }), ruralDeclared: true }));
-  assert.equal(shipAmount(), "6000");
+  assert.equal(shipAmount(), String(AU));
   assert.equal(stripeBody().get("metadata[rural]"), "no");
   assert.equal(stripeBody().get("metadata[rural_why]"), null);
 });
 
 test("shipping: \"Rural Delivery 3\" spelled out is caught as well as \"RD 3\"", async () => {
   await post(checkout, order({ address: manual("3800", { line1: "7 Pine Lane, Rural Delivery 3" }) }));
-  assert.equal(shipAmount(), "2200");
+  assert.equal(shipAmount(), String(NORTH + RURAL));
   assert.equal(stripeBody().get("metadata[rural_why]"), "address");
 });
 
 test("quote: the cart page is told WHY it is rural, so it can explain the surcharge", async () => {
   const r = await post(quote, { items: [{ sku: "flip-g3", qty: 1 }], country: "NZ", address: manual("3800"), ruralDeclared: true });
-  assert.equal(r.body.amount, 2200);
+  assert.equal(r.body.amount, NORTH + RURAL);
   assert.equal(r.body.rural, true);
   assert.equal(r.body.ruralReason, "declared");
 });
@@ -265,7 +276,7 @@ test("address: a Google place is re-read on the server, so the browser can't pic
   // The browser claims a cheap postcode alongside a real South Island place id...
   const r = await post(checkout, order({ address: { placeId: "place_south", manual: { line1: "x", city: "y", postcode: "3800" } } }));
   assert.equal(r.code, 200);
-  assert.equal(shipAmount(), "1500"); // ...but the SERVER's postcode (9300) decided the price
+  assert.equal(shipAmount(), String(SOUTH)); // ...but the SERVER's postcode (9300) decided the price
   assert.equal(stripeBody().get("metadata[postcode]"), "9300");
   assert.match(stripeBody().get("metadata[addr]"), /Queenstown/);
 });
@@ -302,10 +313,10 @@ test("address-suggest: proxies Google, keeps the key server-side, and degrades q
 test("quote: gives the cart page a live shipping price, using the same logic as checkout", async () => {
   const r = await post(quote, { items: [{ sku: "flip-g3", qty: 1 }], country: "NZ", address: manual("9300") });
   assert.equal(r.code, 200);
-  assert.equal(r.body.amount, 1500);
+  assert.equal(r.body.amount, SOUTH);
   assert.equal(r.body.rural, false);
   const rr = await post(quote, { items: [{ sku: "flip-g3", qty: 1 }], country: "NZ", address: manual("3874", { line1: "9 Foo Rd RD 1" }) });
-  assert.equal(rr.body.amount, 2200);
+  assert.equal(rr.body.amount, NORTH + RURAL);
   assert.equal(rr.body.rural, true);
   assert.equal((await post(quote, { items: [], country: "NZ", address: manual() })).code, 400);
 });

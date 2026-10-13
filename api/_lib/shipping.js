@@ -5,17 +5,35 @@
 // the courier charges: a base rate by region, a bit extra per additional item,
 // and a RURAL surcharge that gets passed on to the customer.
 //
-// !!! EVERY NUMBER AND THE RURAL LIST BELOW IS A PLACEHOLDER !!!
-// Replace them with Craig's real NZ Couriers rates before the shop goes live.
-// All amounts are CENTS, NZD, GST-inclusive.
+// These are ESTIMATES, set 13 Oct 2026, not Craig's NZ Couriers account rates.
+// They are anchored on NZ Post's published 2026 retail prices with an account
+// discount assumed, because NZ Couriers do not publish a rate card:
+//
+//   within-island large parcel, first 5kg ... $12.90 retail
+//   nationwide (crossing Cook Strait) ....... $39.70 retail, $25.00 economy
+//   rural delivery .......................... $6.00 per item
+//
+// Replace with Craig's real account rates when they arrive. All amounts are
+// CENTS, NZD, GST-inclusive.
+//
+// NOTE on nzSouth: Craig ships from Tauranga, so "South Island" really means
+// "crosses the Cook Strait" — that is the expensive leg, not a minor uplift.
+// The old $15.00 placeholder was the single biggest under-collection risk.
+//
+// NOTE on extraItem: NZ Post charges each additional 5kg at the SAME rate as
+// the first, so a second chock is nearer a second ticket than a small add-on.
+//
+// NOTE on volumetric weight: carriers charge the GREATER of actual weight and
+// volumetric weight, rounded up to the nearest 5kg. Box dimensions therefore
+// set the price as much as the product does — see the packaging item.
 
 export const RATES = {
-  nzNorth: 1200,        // base, one item, North Island
-  nzSouth: 1500,        // base, one item, South Island
-  extraItem: 300,       // added per additional item in the order...
-  maxExtra: 1500,       // ...up to this much in total
-  ruralSurcharge: 1000, // added when the address is rural
-  au: 6000,             // flat, Australia
+  nzNorth: 1300,        // base, one item, North Island (within-island)
+  nzSouth: 2800,        // base, one item, South Island (crosses the Strait)
+  extraItem: 800,       // added per additional item in the order...
+  maxExtra: 2400,       // ...up to this much in total (caps at 3 extra items)
+  ruralSurcharge: 700,  // added when the address is rural
+  au: 6000,             // flat, Australia — UNVERIFIED, international is dear
 };
 
 // Postcodes NZ Couriers treats as rural delivery.
