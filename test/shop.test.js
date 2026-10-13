@@ -445,6 +445,9 @@ test("webhook: a paid order takes stock off, emails Craig and the customer", asy
   assert.equal(fakeStock["flip-g3"], 3);
   const [craig, cust] = emails();
   assert.equal(craig.to[0], "craig@betterservice.co.nz");
+  // Ben is on the order email too, so a shop fault is noticed by someone who
+  // can fix it rather than waiting for Craig to say orders stopped arriving.
+  assert.equal(craig.to.length, 2);
   assert.match(craig.text, /2 x FLIP G3/);
   assert.match(craig.text, /12 Smith Rd/);
   assert.match(craig.text, /Rural delivery: YES/);
@@ -452,6 +455,23 @@ test("webhook: a paid order takes stock off, emails Craig and the customer", asy
   assert.match(craig.text, /TOTAL PAID: \$365\.00/);
   assert.equal(cust.to[0], "pat@example.com");
   assert.match(cust.text, /payment has been received/);
+});
+
+test("webhook: the order email still goes somewhere if the recipient list is junk", async () => {
+  // One address left in a trailing comma, spaces either side — the shape a
+  // hand-edited env var actually arrives in.
+  const prev = process.env.FLIP_ORDER_EMAILS;
+  process.env.FLIP_ORDER_EMAILS = " craig@betterservice.co.nz , ,";
+  await deliver(event());
+  assert.deepEqual(emails()[0].to, ["craig@betterservice.co.nz"]);
+
+  // Blanked out entirely — must fall back, never email nobody.
+  calls.length = 0;
+  process.env.FLIP_ORDER_EMAILS = "  , ";
+  await deliver(event({ id: "cs_test_fallback" }));
+  assert.equal(emails()[0].to.length, 2);
+
+  process.env.FLIP_ORDER_EMAILS = prev;
 });
 
 test("webhook: Craig's email says HOW rural was decided, not just that it was", async () => {

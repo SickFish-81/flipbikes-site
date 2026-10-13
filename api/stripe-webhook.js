@@ -21,7 +21,23 @@ import { buildInvoice, invoiceText, invoiceHtml, invoiceNumber } from "./_lib/in
 // parse the body for us.
 export const config = { api: { bodyParser: false } };
 
-const TO = "craig@betterservice.co.nz";
+// Who hears about a new order. Craig packs them; Ben is on it as well so a
+// problem with the shop is noticed by someone who can fix it, rather than
+// waiting for Craig to mention that orders stopped arriving.
+//
+// FLIP_ORDER_EMAILS overrides the list (comma separated) without a deploy —
+// useful when someone is away, and it keeps a staffing decision out of a
+// public repo. Craig is the fallback, never nobody.
+const DEFAULT_ORDER_EMAILS = "craig@betterservice.co.nz,xspyder5x@gmail.com";
+// Read per request, not once at import: a value captured at module load only
+// changes on a redeploy, which is exactly what this is meant to avoid. An
+// empty or all-whitespace list falls back rather than emailing nobody — the
+// order email is the only thing that tells anyone a sale happened.
+const recipients = () => {
+  const list = String(process.env.FLIP_ORDER_EMAILS || "")
+    .split(",").map((e) => e.trim()).filter(Boolean);
+  return list.length ? list : DEFAULT_ORDER_EMAILS.split(",");
+};
 const FROM = "Flip Bikes Website <noreply@flipbikes.co.nz>";
 const REPLY_TO = "craig@betterservice.co.nz";
 
@@ -118,11 +134,13 @@ function buildEmails(order, remaining, inv) {
   return { craig, customer, customerHtml };
 }
 
+// `to` may be one address or several. Resend takes an array either way, and
+// one call with two recipients beats two calls that can half-fail.
 async function send(key, { to, subject, text, html, reply_to }) {
   const r = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from: FROM, to: [to], reply_to, subject, text, ...(html ? { html } : {}) }),
+    body: JSON.stringify({ from: FROM, to: Array.isArray(to) ? to : [to], reply_to, subject, text, ...(html ? { html } : {}) }),
   });
   if (!r.ok) throw new Error(`Resend ${r.status}: ${await r.text()}`);
 }
@@ -197,7 +215,7 @@ export default async function handler(req, res) {
       const num = row.invoice_number ? invoiceNumber(row.invoice_number) : "FLIP-" + String(order.session_id).slice(-8).toUpperCase();
       const inv = buildInvoice({ order, number: num, dateMs: (event.created || Date.now() / 1000) * 1000, biz: business() });
       const mail = buildEmails(order, remaining, inv);
-      await send(key, { to: TO, subject: `FLIP order: ${order.name || order.email || order.session_id}`, text: mail.craig, reply_to: order.email || REPLY_TO });
+      await send(key, { to: recipients(), subject: `FLIP order: ${order.name || order.email || order.session_id}`, text: mail.craig, reply_to: order.email || REPLY_TO });
       if (order.email) {
         await send(key, {
           to: order.email,
