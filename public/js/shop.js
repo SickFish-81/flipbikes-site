@@ -72,6 +72,41 @@
     refreshNavCount();
   }
 
+  // ---- prices written from the API, so they cannot drift from what's charged
+  //
+  // Every price used to be typed by hand into index.html while checkout looked
+  // its own up in catalog.js, and catalog.js's comment said "change a price
+  // here and nowhere else" — which was simply untrue. Two copies of a number,
+  // one of them authoritative and the other the one customers read. Advertise
+  // $150 while Stripe charges $179 and that is a Fair Trading Act problem, not
+  // an untidy one.
+  //
+  // Now the page carries `data-shop-price="<sku>"` and this fills it in. The
+  // number in the HTML is the FALLBACK, not the source: if /api/shop never
+  // answers the page shows what it always showed rather than a blank or a
+  // nought. Keeping it accurate is still worth doing, but it is no longer the
+  // thing that decides what a customer is quoted.
+  //
+  //   data-shop-price="flip-g3"                      ->  $179.00 NZD
+  //   data-shop-price="flip-g3" data-price-style="plain"  ->  $179
+  //
+  // "plain" is for prose — "All for just $270" reads wrong as "$270.00 NZD".
+  function renderPrices() {
+    var slots = document.querySelectorAll("[data-shop-price]");
+    Array.prototype.forEach.call(slots, function (slot) {
+      var p = product(slot.getAttribute("data-shop-price"));
+      if (!p || typeof p.price !== "number") return; // leave the fallback text
+      if (slot.getAttribute("data-price-style") === "plain") {
+        // Whole dollars lose the cents: "$270", not "$270.00".
+        slot.textContent = p.price % 100 === 0
+          ? "$" + (p.price / 100)
+          : money(p.price);
+      } else {
+        slot.textContent = money(p.price) + " NZD";
+      }
+    });
+  }
+
   // ---- "Add to cart" buttons on the product pages
   function renderBuyButtons() {
     var slots = document.querySelectorAll("[data-shop-sku]");
@@ -374,6 +409,11 @@
       .then(function (r) { if (!r.ok) throw new Error("shop " + r.status); return r.json(); })
       .then(function (data) {
         shop = data;
+        // Prices FIRST, and outside the `enabled` check on purpose: what a
+        // chock costs is a fact about the product, not about whether the
+        // checkout is switched on. With ordering off the site should still
+        // quote the right number.
+        renderPrices();
         if (!shop.enabled) { renderCart(); return; }
         addNavLink();
         renderBuyButtons();

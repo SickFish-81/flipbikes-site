@@ -5,8 +5,19 @@
 // All amounts are in CENTS, NZD, and GST-INCLUSIVE (NZ consumer prices are
 // quoted GST-inclusive, and these match what the site already advertises).
 //
-// The prices below are the "special price" figures currently shown on
-// public/index.html. Change a price here and nowhere else.
+// CHANGE A PRICE HERE AND NOWHERE ELSE — and as of 14 Oct 2026 that is finally
+// true. It was not before.
+//
+// This comment used to say the same thing while index.html carried its own
+// hand-typed copy of every price, so following it left the homepage
+// advertising one number and Stripe charging another. Advertise $150 and
+// charge $179 and that is a Fair Trading Act problem, not an untidy one.
+//
+// The page now reads its prices from /api/shop, which reads them from here.
+// The numbers still written into index.html are FALLBACKS, shown only if the
+// API never answers — worth keeping accurate, but no longer what decides what
+// a customer is quoted. public/js/shop.js -> renderPrices() is the mechanism,
+// and test/shop.test.js checks every SKU still has a price hook on the page.
 
 // `size` decides which freight rate applies, and it is the ONLY thing in here
 // that isn't money. "small" means the item goes in a courier BAG — a satchel,

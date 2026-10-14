@@ -13,6 +13,7 @@ import suggest from "../api/address-suggest.js";
 import webhook, { verifySignature, itemsFromMetadata } from "../api/stripe-webhook.js";
 import { gstFromInclusive } from "../api/_lib/invoice.js";
 import { RATES } from "../api/_lib/shipping.js";
+import { PRODUCTS } from "../api/_lib/catalog.js";
 
 // Expectations are DERIVED from the rate table, never hard-coded, so that
 // changing Craig's rates doesn't break seven tests that still pass in spirit.
@@ -161,6 +162,27 @@ test("shipping: North vs South Island, extra items, Australia", async () => {
   await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }) }));
   assert.equal(shipAmount(), String(AU));
   assert.equal(stripeBody().get("payment_intent_data[shipping][address][country]"), "AU");
+});
+
+test("homepage: every product's price is wired to the API, not typed in", async () => {
+  // The trap this guards: a price lives in catalog.js AND in the page. When
+  // the page carried its own hand-typed copy, changing one left the site
+  // advertising a different number from the one Stripe charged.
+  const { readFileSync } = await import("node:fs");
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+
+  for (const p of PRODUCTS) {
+    assert.ok(
+      html.includes(`data-shop-price="${p.sku}"`),
+      `${p.sku} has no data-shop-price hook on the homepage — its price would be hand-typed again`,
+    );
+  }
+
+  // And nothing is left showing a bare dollar figure outside a wired element.
+  // Strip the hooked spans/divs, then look for survivors.
+  const stripped = html.replace(/<(div|span)[^>]*data-shop-price=[^>]*>.*?<\/\1>/gs, "");
+  const stray = stripped.match(/\$\s?\d[\d,.]*/g) || [];
+  assert.deepEqual(stray, [], `prices still hard-coded in the page: ${stray.join(", ")}`);
 });
 
 test("shipping: an all-small order ships as a flat-rate bag, nationwide", async () => {
