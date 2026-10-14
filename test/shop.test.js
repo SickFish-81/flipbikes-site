@@ -659,3 +659,124 @@ test("invoice: customer-supplied text is escaped in the HTML email", async () =>
   assert.doesNotMatch(cust.html, /<script>/);
   assert.match(cust.html, /&lt;script&gt;/);
 });
+
+// ---------------------------------------------------------------------------
+// Search-engine plumbing. None of this changes what a customer sees; it is
+// what Google reads. It is tested for the same reason the prices are: a
+// quietly wrong number in markup nobody looks at is the dangerous kind.
+// ---------------------------------------------------------------------------
+
+const PUBLIC = new URL("../public/", import.meta.url);
+const readPublic = async (name) =>
+  (await import("node:fs")).readFileSync(new URL(name, PUBLIC), "utf8");
+
+// The pages we want in search results, and the ones we do not. Every .html in
+// public/ must be in exactly one of these lists, so a new page cannot be added
+// without a decision about whether Google should see it.
+const INDEXABLE = {
+  "index.html": "https://www.flipbikes.co.nz/",          // / and /index.html both answer 200
+  "about.html": "https://www.flipbikes.co.nz/about.html",
+  "installation.html": "https://www.flipbikes.co.nz/installation.html",
+  "faq.html": "https://www.flipbikes.co.nz/faq.html",
+  "contact.html": "https://www.flipbikes.co.nz/contact.html",
+};
+const NOT_INDEXABLE = ["cart.html", "thanks.html", "styleguide.html", "404.html"];
+
+test("seo: every page is either canonical-tagged or noindexed, and we decided which", async () => {
+  const { readdirSync } = await import("node:fs");
+  const pages = readdirSync(PUBLIC).filter((f) => f.endsWith(".html")).sort();
+  assert.deepEqual(
+    pages,
+    [...Object.keys(INDEXABLE), ...NOT_INDEXABLE].sort(),
+    "a page was added or renamed: list it in INDEXABLE or NOT_INDEXABLE, and in sitemap.xml if it should be found",
+  );
+
+  for (const [page, url] of Object.entries(INDEXABLE)) {
+    const html = await readPublic(page);
+    assert.ok(
+      html.includes(`<link rel="canonical" href="${url}">`),
+      `${page} has no canonical tag pointing at ${url}`,
+    );
+    assert.ok(
+      !/<meta name="robots" content="noindex">/.test(html),
+      `${page} is both canonical and noindex - the two contradict each other`,
+    );
+  }
+
+  // 404.html answers with a 404 status, which keeps it out of the index on its
+  // own; the other three need the tag.
+  for (const page of ["cart.html", "thanks.html", "styleguide.html"]) {
+    const html = await readPublic(page);
+    assert.ok(
+      /<meta name="robots" content="noindex">/.test(html),
+      `${page} should be noindex - it is not a page we want found in search`,
+    );
+  }
+});
+
+test("seo: the sitemap lists exactly the indexable pages", async () => {
+  const xml = await readPublic("sitemap.xml");
+  const listed = [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]).sort();
+  assert.deepEqual(
+    listed,
+    Object.values(INDEXABLE).sort(),
+    "sitemap.xml is out of step with the pages - a page is missing, or one we noindexed is still listed",
+  );
+
+  const robots = await readPublic("robots.txt");
+  assert.ok(
+    robots.includes("Sitemap: https://www.flipbikes.co.nz/sitemap.xml"),
+    "robots.txt must point crawlers at the sitemap",
+  );
+});
+
+test("seo: each page's title and description are its own", async () => {
+  // The FAQ page shipped for two years carrying the installation guide's title
+  // ("FAQ") and its meta description word for word, which tells Google the two
+  // pages are the same page.
+  const seen = new Map();
+  for (const page of Object.keys(INDEXABLE)) {
+    const html = await readPublic(page);
+    const title = html.match(/<title>(.*?)<\/title>/s)?.[1];
+    const desc = html.match(/<meta content="([^"]+)" name="description">/)?.[1];
+    assert.ok(title && title.length > 10, `${page} has no real <title>`);
+    assert.ok(desc && desc.length > 50, `${page} has no real meta description`);
+    for (const [key, value] of [["title", title], ["description", desc]]) {
+      const owner = seen.get(key + "::" + value);
+      assert.ok(!owner, `${page} shares its ${key} with ${owner}`);
+      seen.set(key + "::" + value, page);
+    }
+  }
+});
+
+test("seo: the homepage's structured-data prices come from catalog.js", async () => {
+  // Structured data is a price quoted to Google and shown in the search
+  // result. It is generated from catalog.js by scripts/gen-schema.mjs; this is
+  // the check that nobody edited it by hand or changed a price and forgot to
+  // re-run it.
+  const { render } = await import("../scripts/gen-schema.mjs");
+  const html = await readPublic("index.html");
+  assert.equal(
+    render(html),
+    html,
+    "public/index.html structured data is out of date. Run: node scripts/gen-schema.mjs",
+  );
+
+  // And belt-and-braces: it is valid JSON, and the numbers in it are the ones
+  // checkout will charge.
+  const json = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(json, "no JSON-LD block on the homepage");
+  const graph = JSON.parse(json)["@graph"];
+  const list = graph.find((n) => n["@type"] === "ItemList").itemListElement;
+  assert.equal(list.length, PRODUCTS.length, "every product should appear in the structured data");
+  for (const p of PRODUCTS) {
+    const entry = list.find((e) => e.item.sku === p.sku);
+    assert.ok(entry, `${p.sku} is missing from the structured data`);
+    assert.equal(
+      entry.item.offers.price,
+      (p.price / 100).toFixed(2),
+      `${p.sku}: Google would be told a different price from the one Stripe charges`,
+    );
+    assert.equal(entry.item.offers.priceCurrency, "NZD");
+  }
+});

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The pages we want in search results. Deliberately excludes cart.html,
+     thanks.html, styleguide.html and 404.html. test/shop.test.js checks this
+     list against public/*.html, so adding a page without listing it here
+     fails the build. No <lastmod>: a hand-maintained date goes stale and
+     Google ignores a date it cannot trust. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://www.flipbikes.co.nz/</loc></url>
+  <url><loc>https://www.flipbikes.co.nz/about.html</loc></url>
+  <url><loc>https://www.flipbikes.co.nz/installation.html</loc></url>
+  <url><loc>https://www.flipbikes.co.nz/faq.html</loc></url>
+  <url><loc>https://www.flipbikes.co.nz/contact.html</loc></url>
+</urlset>

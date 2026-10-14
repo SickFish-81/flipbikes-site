@@ -1,0 +1,13 @@
+# https://www.flipbikes.co.nz/robots.txt
+#
+# Everything a customer can see is open to crawlers. The three pages we do not
+# want in search results (cart, thanks, styleguide) carry
+# <meta name="robots" content="noindex"> instead of being blocked here on
+# purpose: a page blocked in robots.txt is never fetched, so the noindex is
+# never read, and Google can still index a blocked URL it finds linked
+# elsewhere. Allowing the fetch is what actually keeps them out.
+
+User-agent: *
+Disallow: /api/
+
+Sitemap: https://www.flipbikes.co.nz/sitemap.xml
