@@ -16,6 +16,7 @@ import { bySku, money } from "./_lib/catalog.js";
 import { dbConfigured, claimOrder, patchOrder, takeStock } from "./_lib/db.js";
 import { business } from "./_lib/business.js";
 import { buildInvoice, invoiceText, invoiceHtml, invoiceNumber } from "./_lib/invoice.js";
+import { invoicePdfBase64, invoicePdfName } from "./_lib/invoicePdf.js";
 
 // Signature checking needs the EXACT bytes Stripe sent, so Vercel must not
 // parse the body for us.
@@ -136,11 +137,19 @@ function buildEmails(order, remaining, inv) {
 
 // `to` may be one address or several. Resend takes an array either way, and
 // one call with two recipients beats two calls that can half-fail.
-async function send(key, { to, subject, text, html, reply_to }) {
+//
+// `attachments` is Resend's shape: [{ filename, content }] with content as
+// base64. Omitted entirely when there is nothing to attach — an empty array is
+// not the same thing to every mail client.
+async function send(key, { to, subject, text, html, reply_to, attachments }) {
   const r = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from: FROM, to: Array.isArray(to) ? to : [to], reply_to, subject, text, ...(html ? { html } : {}) }),
+    body: JSON.stringify({
+      from: FROM, to: Array.isArray(to) ? to : [to], reply_to, subject, text,
+      ...(html ? { html } : {}),
+      ...(attachments?.length ? { attachments } : {}),
+    }),
   });
   if (!r.ok) throw new Error(`Resend ${r.status}: ${await r.text()}`);
 }
@@ -215,12 +224,34 @@ export default async function handler(req, res) {
       const num = row.invoice_number ? invoiceNumber(row.invoice_number) : "FLIP-" + String(order.session_id).slice(-8).toUpperCase();
       const inv = buildInvoice({ order, number: num, dateMs: (event.created || Date.now() / 1000) * 1000, biz: business() });
       const mail = buildEmails(order, remaining, inv);
-      await send(key, { to: recipients(), subject: `FLIP order: ${order.name || order.email || order.session_id}`, text: mail.craig, reply_to: order.email || REPLY_TO });
+
+      // The invoice as a file, built ONCE and attached to both emails: the
+      // customer wants something they can keep, and Craig wants the exact
+      // document the customer got, not a reconstruction of it.
+      //
+      // Never fatal. This runs after the money has been taken, so an invoice
+      // that arrives without its attachment is a nuisance, while an email that
+      // never arrives because the PDF generator threw is a customer who paid
+      // and heard nothing. A null here just means no attachment.
+      const pdf = await invoicePdfBase64(inv);
+      const attachments = pdf ? [{ filename: invoicePdfName(inv), content: pdf }] : [];
+      if (!pdf) console.error("No PDF attached to", inv.number, "- the emails still went.");
+
+      await send(key, {
+        to: recipients(),
+        subject: `FLIP order: ${order.name || order.email || order.session_id}`,
+        // Told, not hidden: if Craig is expecting a file and there isn't one,
+        // he needs to know it was the generator and not his mail client.
+        text: mail.craig + (pdf ? "" : "\n\n(The PDF invoice could not be generated for this order.)"),
+        reply_to: order.email || REPLY_TO,
+        attachments,
+      });
       if (order.email) {
         await send(key, {
           to: order.email,
           subject: (inv.isTaxInvoice ? `Tax invoice ${inv.number}` : `Order confirmation ${inv.number}`) + " - your FLIP Bike Chocks order",
           text: mail.customer, html: mail.customerHtml, reply_to: REPLY_TO,
+          attachments,
         });
       }
       if (dbConfigured()) await patchOrder(order.session_id, { emailed: true });

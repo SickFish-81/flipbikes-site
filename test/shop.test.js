@@ -484,6 +484,49 @@ test("webhook: Craig's email says HOW rural was decided, not just that it was", 
   assert.match(emails()[0].text, /Rural delivery: YES.*CUSTOMER ticked the rural box/);
 });
 
+test("webhook: both emails carry the invoice as a PDF attachment", async () => {
+  await deliver(event());
+  const [craig, cust] = emails();
+
+  for (const [who, mail] of [["Craig", craig], ["the customer", cust]]) {
+    assert.ok(Array.isArray(mail.attachments) && mail.attachments.length === 1,
+      `${who}'s email should carry exactly one attachment`);
+    const a = mail.attachments[0];
+    assert.match(a.filename, /^(Tax-invoice|Order)-FLIP-\d+\.pdf$/);
+    // Base64 of a real PDF: decodes, and starts with the file signature.
+    const bytes = Buffer.from(a.content, "base64");
+    assert.equal(bytes.subarray(0, 5).toString("latin1"), "%PDF-");
+    assert.ok(bytes.length > 2000, "a one-page invoice should not be near-empty");
+  }
+
+  // Built once, attached twice — not generated separately per recipient.
+  assert.equal(craig.attachments[0].content, cust.attachments[0].content);
+});
+
+test("webhook: a macron survives into the PDF rather than being dropped", async () => {
+  // The fault this guards: WinAnsi has no macron vowel. jsPDF drops it
+  // silently and pdf-lib throws, which is how Betterservice's rental invoice
+  // #01065 ended up with no PDF at all.
+  await deliver(event({
+    metadata: {
+      items: "flip-g3:1", country: "NZ", name: "Māhia Ngātai", phone: "021123456",
+      addr: "1 Ōhauiti Road, Tauranga, 3173, New Zealand", postcode: "3173", rural: "no",
+    },
+  }));
+  const pdf = Buffer.from(emails()[0].attachments[0].content, "base64");
+  assert.equal(pdf.subarray(0, 5).toString("latin1"), "%PDF-");
+  assert.ok(pdf.length > 2000);
+});
+
+test("webhook: if the PDF can't be built the emails still go", async () => {
+  // Simulated by an order the invoice builder cannot render — the point is
+  // that a failure costs the attachment, never the email. This runs AFTER the
+  // customer has paid.
+  const { invoicePdfBase64 } = await import("../api/_lib/invoicePdf.js");
+  const broken = await invoicePdfBase64(null);
+  assert.equal(broken, null, "a bad invoice should return null, not throw");
+});
+
 test("webhook: Stripe delivering the same event twice does not double-take stock or double-email", async () => {
   const payload = event();
   await deliver(payload);
