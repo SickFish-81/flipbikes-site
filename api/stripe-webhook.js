@@ -13,7 +13,7 @@
 
 import crypto from "node:crypto";
 import { bySku, money } from "./_lib/catalog.js";
-import { dbConfigured, claimOrder, patchOrder, takeStock } from "./_lib/db.js";
+import { dbConfigured, claimOrder, patchOrder, takeStock, logEmail } from "./_lib/db.js";
 import { business } from "./_lib/business.js";
 import { buildInvoice, invoiceText, invoiceHtml, invoiceNumber } from "./_lib/invoice.js";
 import { invoicePdfBase64, invoicePdfName } from "./_lib/invoicePdf.js";
@@ -152,6 +152,44 @@ async function send(key, { to, subject, text, html, reply_to, attachments }) {
     }),
   });
   if (!r.ok) throw new Error(`Resend ${r.status}: ${await r.text()}`);
+  // The message id, so email_log can be joined to the delivery events Resend
+  // sends later. Without it a row here and a bounce there never meet.
+  const body = await r.json().catch(() => null);
+  return body?.id ?? null;
+}
+
+// Send, and leave a record either way.
+//
+// The record is the whole point. Before this the shop logged nothing: a
+// successful email appeared in email_log only because Resend's webhook called
+// back and created an orphan row labelled "unknown", and a send that FAILED
+// left no trace at all. See the note on logEmail in _lib/db.js.
+//
+// Logging is never allowed to turn a sent email into a failed request — the
+// money has already been taken. A failed SEND still throws, because Stripe
+// retrying is the right answer to that.
+async function sendLogged(key, { kind, sessionId, ...opts }) {
+  let resendId = null;
+  try {
+    resendId = await send(key, opts);
+  } catch (err) {
+    await logQuietly({ kind, to: opts.to, subject: opts.subject, sessionId,
+                       status: "failed", error: String(err?.message ?? err) });
+    throw err;
+  }
+  await logQuietly({ kind, to: opts.to, subject: opts.subject, sessionId, resendId, status: "accepted" });
+  return resendId;
+}
+
+async function logQuietly(entry) {
+  if (!dbConfigured()) return;
+  try {
+    await logEmail(entry);
+  } catch (err) {
+    // The email is already sent. Losing its log line is a nuisance; failing
+    // the webhook over it would make Stripe retry and send it twice.
+    console.error("email_log write failed (the email itself was unaffected):", err?.message ?? err);
+  }
 }
 
 export default async function handler(req, res) {
@@ -237,7 +275,9 @@ export default async function handler(req, res) {
       const attachments = pdf ? [{ filename: invoicePdfName(inv), content: pdf }] : [];
       if (!pdf) console.error("No PDF attached to", inv.number, "- the emails still went.");
 
-      await send(key, {
+      await sendLogged(key, {
+        kind: "flip_order",
+        sessionId: order.session_id,
         to: recipients(),
         subject: `FLIP order: ${order.name || order.email || order.session_id}`,
         // Told, not hidden: if Craig is expecting a file and there isn't one,
@@ -247,7 +287,9 @@ export default async function handler(req, res) {
         attachments,
       });
       if (order.email) {
-        await send(key, {
+        await sendLogged(key, {
+          kind: "flip_invoice",
+          sessionId: order.session_id,
           to: order.email,
           subject: (inv.isTaxInvoice ? `Tax invoice ${inv.number}` : `Order confirmation ${inv.number}`) + " - your FLIP Bike Chocks order",
           text: mail.customer, html: mail.customerHtml, reply_to: REPLY_TO,

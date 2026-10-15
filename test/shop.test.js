@@ -32,6 +32,8 @@ let orders;        // what the fake DB's flip_orders holds
 let stripeStatus;  // status the fake Stripe returns
 let places;        // what the fake Google Places knows, by place id
 let invSeq;        // the fake database's invoice-number counter
+let emailLog;      // rows the shop writes to email_log
+let resendSeq;     // Resend hands out a distinct id per message
 
 function res() {
   const r = { code: 0, body: undefined, headers: {} };
@@ -48,7 +50,10 @@ beforeEach(() => {
   orders = {};
   stripeStatus = 200;
   invSeq = 1000;
+  emailLog = [];
+  resendSeq = 0;
   delete process.env.FLIP_GST_NUMBER; delete process.env.FLIP_BUSINESS_NAME; delete process.env.FLIP_BUSINESS_ADDRESS;
+  delete process.env.FLIP_ORDER_EMAILS;   // see the junk-list test: a bad restore used to leak "undefined" into every later test
   places = {
     place_1: { formattedAddress: "12 Smith Rd, Te Awamutu 3800, New Zealand", addressComponents: [
       { types: ["street_number"], longText: "12" }, { types: ["route"], longText: "Smith Road" },
@@ -78,7 +83,7 @@ beforeEach(() => {
     if (u.startsWith("https://api.stripe.com/")) {
       return stripeStatus === 200 ? json({ url: "https://checkout.stripe.com/c/pay/cs_test_1" }) : json({ error: "nope" }, stripeStatus);
     }
-    if (u.startsWith("https://api.resend.com/")) return json({ id: "email_1" });
+    if (u.startsWith("https://api.resend.com/")) return json({ id: `email_${++resendSeq}` });
     if (u === "https://places.googleapis.com/v1/places:autocomplete") {
       return json({ suggestions: [{ placePrediction: { placeId: "place_1", text: { text: "12 Smith Road, Te Awamutu, New Zealand" } } }, { queryPrediction: {} }] });
     }
@@ -105,6 +110,24 @@ beforeEach(() => {
       }
       const id = decodeURIComponent(u.split("session_id=eq.")[1].split("&")[0]);
       return json([orders[id]]);
+    }
+    if (u.includes("/rest/v1/email_log")) {
+      // Mirrors the real table closely enough to be worth testing against:
+      // resend_id is UNIQUE, the insert ignores duplicates, and the PATCH
+      // matches on resend_id and never touches status.
+      if (opts.method === "POST") {
+        const row = JSON.parse(opts.body);
+        const clash = row.resend_id && emailLog.some((e) => e.resend_id === row.resend_id);
+        if (!clash) emailLog.push(row);
+        return new Response("", { status: 201 });
+      }
+      if (opts.method === "PATCH") {
+        const id = decodeURIComponent(u.split("resend_id=eq.")[1]);
+        const row = emailLog.find((e) => e.resend_id === id);
+        if (row) Object.assign(row, JSON.parse(opts.body));
+        return new Response(null, { status: 204 });
+      }
+      return json([]);
     }
     throw new Error("unexpected fetch: " + u);
   };
@@ -493,7 +516,12 @@ test("webhook: the order email still goes somewhere if the recipient list is jun
   await deliver(event({ id: "cs_test_fallback" }));
   assert.equal(emails()[0].to.length, 2);
 
-  process.env.FLIP_ORDER_EMAILS = prev;
+  // Restore by DELETING when there was nothing there. `process.env.X = undefined`
+  // stores the literal string "undefined", which then leaks into every later
+  // test as a one-address recipient list. It went unnoticed because nothing
+  // after this point inspected the recipients until the email_log tests below.
+  if (prev === undefined) delete process.env.FLIP_ORDER_EMAILS;
+  else process.env.FLIP_ORDER_EMAILS = prev;
 });
 
 test("webhook: Craig's email says HOW rural was decided, not just that it was", async () => {
@@ -779,4 +807,75 @@ test("seo: the homepage's structured-data prices come from catalog.js", async ()
     );
     assert.equal(entry.item.offers.priceCurrency, "NZD");
   }
+});
+
+// ---------------------------------------------------------------------------
+// email_log — the shop keeps its own record of what it sent
+//
+// Before this it kept none. A row appeared only if Resend's delivery webhook
+// called back, and that row was labelled kind "unknown", had no link to the
+// order, and carried only ONE recipient: Resend fires a separate event per
+// recipient and the webhook sets to_email only when it CREATES the row. On
+// 14 Oct that made it look as though Craig had not been emailed about the
+// first real order. He had. Worse, a send that failed before reaching Resend
+// left no trace at all.
+// ---------------------------------------------------------------------------
+
+test("email_log: both order emails are recorded, with every recipient", async () => {
+  await deliver(event());
+
+  assert.equal(emailLog.length, 2, "one row for the order email, one for the customer's invoice");
+
+  const internal = emailLog.find((e) => e.kind === "flip_order");
+  const invoice = emailLog.find((e) => e.kind === "flip_invoice");
+  assert.ok(internal, "the order email is logged under a real kind, not 'unknown'");
+  assert.ok(invoice, "the customer invoice is logged under a real kind");
+
+  // The whole point: BOTH recipients, so this row can never again be read as
+  // evidence that one of them was left out.
+  assert.equal(internal.to_email, "craig@betterservice.co.nz, xspyder5x@gmail.com");
+  assert.equal(invoice.to_email, "pat@example.com");
+
+  // resend_id is what lets Resend's later delivery events land on these rows
+  // instead of creating orphans labelled "unknown".
+  assert.ok(internal.resend_id, "the order email records its Resend id");
+  assert.ok(invoice.resend_id, "the invoice records its Resend id");
+  assert.notEqual(internal.resend_id, invoice.resend_id, "two messages, two ids");
+
+  for (const row of emailLog) {
+    assert.equal(row.flip_session_id, "cs_test_1", "each row points at its order");
+    assert.equal(row.status, "accepted");
+    assert.equal(row.error, null);
+  }
+});
+
+test("email_log: a send that never reaches Resend is still recorded", async () => {
+  // This is the case that used to vanish completely.
+  const real = globalThis.fetch;
+  globalThis.fetch = async (u, o) =>
+    String(u).startsWith("https://api.resend.com/") ? new Response("service unavailable", { status: 503 }) : real(u, o);
+  const r = await deliver(event());
+  globalThis.fetch = real;
+
+  assert.equal(r.code, 500, "Stripe should retry a failed send");
+  assert.equal(emailLog.length, 1, "the failure left a row behind");
+  const row = emailLog[0];
+  assert.equal(row.kind, "flip_order");
+  assert.equal(row.status, "failed");
+  assert.equal(row.resend_id, null, "there is no message id when the send never landed");
+  assert.match(row.error, /503/, "the row says why");
+  assert.equal(row.flip_session_id, "cs_test_1");
+});
+
+test("email_log: a logging failure never costs the customer their email", async () => {
+  // The money is already taken. Losing a log line is a nuisance; failing the
+  // webhook over it would make Stripe retry and send everything twice.
+  const real = globalThis.fetch;
+  globalThis.fetch = async (u, o) =>
+    String(u).includes("/rest/v1/email_log") ? new Response("nope", { status: 500 }) : real(u, o);
+  const r = await deliver(event());
+  globalThis.fetch = real;
+
+  assert.equal(r.code, 200, "the order still completes");
+  assert.equal(emails().length, 2, "and both emails still went");
 });
