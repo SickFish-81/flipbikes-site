@@ -12,19 +12,31 @@ import quote from "../api/quote.js";
 import suggest from "../api/address-suggest.js";
 import webhook, { verifySignature, itemsFromMetadata } from "../api/stripe-webhook.js";
 import { gstFromInclusive } from "../api/_lib/invoice.js";
-import { RATES } from "../api/_lib/shipping.js";
+import { RATES, CHOCKS_PER_CARTON, CARTON_WEIGHT_G, TICKET_WEIGHT_G } from "../api/_lib/shipping.js";
 import { PRODUCTS } from "../api/_lib/catalog.js";
 
 // Expectations are DERIVED from the rate table, never hard-coded, so that
 // changing Craig's rates doesn't break seven tests that still pass in spirit.
 // What these tests guard is the BEHAVIOUR: which region, whether rural was
 // detected and why, how extras accumulate and cap.
-const NORTH = RATES.nzNorth;
-const SOUTH = RATES.nzSouth;
+const NORTH = RATES.ticketNorth;
+const SOUTH = RATES.ticketSouth;
 const RURAL = RATES.ruralSurcharge;
 const AU = RATES.au;
-const extras = (n) => Math.min(n * RATES.extraItem, RATES.maxExtra);
-const BAG = RATES.smallNz;
+const BAG = RATES.bagNz;
+
+// Expectations are DERIVED, so changing a weight or a rate moves the tests
+// with it rather than breaking them. `freight` is the whole pricing rule
+// restated independently of the implementation: cartons from chocks, tickets
+// from whichever of cartons and weight needs more.
+const GRAMS = { "flip-g3": 1500, "flip-standard": 1500, "flip-road": 1500, "flip-starter-pack": 3200, "tie-downs": 1000, "d-rings": 350 };
+const weigh = (lines) => lines.reduce((g, [sku, qty]) => g + GRAMS[sku] * qty, 0);
+const cartonsFor = (chocks) => Math.max(1, Math.ceil(chocks / CHOCKS_PER_CARTON));
+const ticketsFor = (chocks, goodsG) => {
+  const cartons = cartonsFor(chocks);
+  return Math.max(cartons, Math.ceil((goodsG + cartons * CARTON_WEIGHT_G) / TICKET_WEIGHT_G));
+};
+const freight = (chocks, goodsG, rate = NORTH) => ticketsFor(chocks, goodsG) * rate;
 
 const calls = [];
 let fakeStock;     // what the fake DB's flip_stock holds
@@ -172,15 +184,21 @@ test("checkout: delivery details ride along to Stripe and the webhook", async ()
   assert.equal(b.get("payment_intent_data[shipping][address][postal_code]"), "3800");
 });
 
-test("shipping: North vs South Island, extra items, Australia", async () => {
-  await post(checkout, order());                                   // 1 item, North
+test("shipping: North vs South Island, a full carton, Australia", async () => {
+  await post(checkout, order());                                   // 1 chock, North
   assert.equal(shipAmount(), String(NORTH));
   calls.length = 0;
-  await post(checkout, order({ address: manual("9300") }));        // 1 item, South
+  await post(checkout, order({ address: manual("9300") }));        // 1 chock, South
   assert.equal(shipAmount(), String(SOUTH));
   calls.length = 0;
-  await post(checkout, order({ items: [{ sku: "flip-g3", qty: 3 }] })); // 3 items: two extras
-  assert.equal(shipAmount(), String(NORTH + extras(2)));
+
+  // THE HEADLINE CHANGE. Three chocks are a carton, 4.85kg, ONE ticket - so
+  // three cost the same to send as one. The old table charged a base plus $8
+  // an item and quoted $29 for this, over-charging the shop's most common
+  // order by $16 on the exact quantity Craig tells customers to buy.
+  await post(checkout, order({ items: [{ sku: "flip-g3", qty: 3 }] }));
+  assert.equal(shipAmount(), String(NORTH));
+  assert.equal(shipAmount(), String(freight(3, weigh([["flip-g3", 3]]))));
   calls.length = 0;
   await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }) }));
   assert.equal(shipAmount(), String(AU));
@@ -220,10 +238,21 @@ test("shipping: an all-small order ships as a flat-rate bag, nationwide", async 
   assert.equal(shipAmount(), String(BAG));
   calls.length = 0;
 
-  // Several small items still make one bag — no per-item extra.
+  // Several small items still make one bag, as long as they fit in one.
   // (d-rings has 1 in the fake stock; tie-downs is untracked, so it carries qty.)
-  await post(checkout, order({ items: [{ sku: "d-rings", qty: 1 }, { sku: "tie-downs", qty: 3 }] }));
+  const light = [["d-rings", 1], ["tie-downs", 1]];
+  assert.ok(weigh(light) <= RATES.bagMaxWeightG, "this much still fits a satchel");
+  await post(checkout, order({ items: [{ sku: "d-rings", qty: 1 }, { sku: "tie-downs", qty: 1 }] }));
   assert.equal(shipAmount(), String(BAG));
+  calls.length = 0;
+
+  // But a satchel holds 3kg, and that is a real limit rather than a policy:
+  // three sets of tie-downs and a D ring weigh more than that, so it becomes
+  // a carton. The old table called this a bag and charged $8 for it.
+  const heavy = [["d-rings", 1], ["tie-downs", 3]];
+  assert.ok(weigh(heavy) > RATES.bagMaxWeightG, "this is the case that no longer fits a bag");
+  await post(checkout, order({ items: [{ sku: "d-rings", qty: 1 }, { sku: "tie-downs", qty: 3 }] }));
+  assert.equal(shipAmount(), String(freight(0, weigh(heavy))));
 });
 
 test("shipping: a bag is cheaper than the carton it replaces", async () => {
@@ -239,17 +268,53 @@ test("shipping: a mixed cart is a carton, and the accessory rides in it free", a
   assert.equal(shipAmount(), String(NORTH));   // one chock, one carton, no extra
 });
 
-test("shipping: only chocks add a per-item charge", async () => {
+test("shipping: accessories never add a CARTON, but they do add weight", async () => {
+  // Two things that used to be conflated. Accessories ride along in a box that
+  // is going anyway, so they never force a second carton - but the courier
+  // charges by the kilo, and four sets of tie-downs outweigh two chocks. The
+  // old table let them ride entirely free, which is how order FLIP-1004 was
+  // quoted $21 of freight for an 8.75kg parcel that costs $25.80 to send.
+  const lines = [["flip-g3", 2], ["tie-downs", 3]];
   await post(checkout, order({ items: [{ sku: "flip-g3", qty: 2 }, { sku: "tie-downs", qty: 3 }] }));
-  assert.equal(shipAmount(), String(NORTH + extras(1)));  // 2 chocks = 1 extra, ties free
+  assert.equal(shipAmount(), String(freight(2, weigh(lines))));
+  assert.equal(cartonsFor(2), 1, "two chocks and three sets of ties is still one box");
+  assert.ok(ticketsFor(2, weigh(lines)) > 1, "but it is over 5kg, so it is two tickets");
 });
 
-test("shipping: too many small items becomes a carton, without a per-item cliff", async () => {
-  // The trap this guards: 4 sets of tie-downs cost $8, so 5 must not cost $52.
-  const qty = RATES.smallMaxItems + 1;
+test("shipping: the three-chock carton has 150g of headroom, and we know it", async () => {
+  // The tightest assumption in the pricing, written down so it cannot drift
+  // quietly. Three chocks at Craig's stated 1.5kg plus a 350g carton come to
+  // 4.85kg against a 5kg ticket. If a real, taped, ready-to-send carton
+  // weighs half a kilo instead, the shop's most common order silently costs
+  // two tickets and under-collects by $12.90 North or $25.00 South.
+  const goods = weigh([["flip-standard", 3]]);
+  const packed = goods + CARTON_WEIGHT_G;
+  const headroom = TICKET_WEIGHT_G - packed;
+
+  assert.equal(ticketsFor(3, goods), 1, "three chocks must be one ticket, or the whole rebuild is wrong");
+  assert.ok(headroom > 0, "a three-chock carton has to fit in one ticket");
+  assert.ok(headroom < 400, `only ${headroom}g of slack - weigh a real packed carton`);
+
+  // And the cliff is real: a heavier carton tips it.
+  const tippingCarton = headroom + 1;
+  assert.ok(
+    Math.ceil((goods + CARTON_WEIGHT_G + tippingCarton) / TICKET_WEIGHT_G) === 2,
+    "just over the line is two tickets, which is what makes this worth watching",
+  );
+});
+
+test("shipping: past the bag, the price steps by the ticket - it does not explode", async () => {
+  // The trap this guards: the old table made 4 sets of tie-downs cost $8 and
+  // 5 cost $52, a 6.5x jump for one more item. Now the price only ever moves
+  // when another ticket is genuinely needed.
+  const qty = RATES.bagMaxItems + 1;
   await post(checkout, order({ items: [{ sku: "tie-downs", qty }] }));
-  assert.equal(shipAmount(), String(NORTH));
-  assert.ok(Number(shipAmount()) < RATES.smallNz + RATES.extraItem * qty);
+  const got = Number(shipAmount());
+  assert.equal(got, freight(0, weigh([["tie-downs", qty]])));
+
+  // Never more than one ticket per 5kg carried, plus the carton it rides in.
+  const ceiling = Math.ceil((weigh([["tie-downs", qty]]) + CARTON_WEIGHT_G) / TICKET_WEIGHT_G) * NORTH;
+  assert.equal(got, ceiling);
 });
 
 test("shipping: rural is still charged on a bag", async () => {

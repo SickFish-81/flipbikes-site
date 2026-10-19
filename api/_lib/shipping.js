@@ -1,55 +1,73 @@
-// Shipping price for an order, from the destination and what's in the box.
+// Shipping price for an order, from the destination and what is in the box.
 //
-// There is no courier API behind this (NZ Couriers' own API needs 100+
-// parcels a day), so this is a RATE TABLE we maintain by hand. It mirrors how
-// the courier charges: a base rate by region, a bit extra per additional item,
-// and a RURAL surcharge that gets passed on to the customer.
+// HOW NZ POST ACTUALLY CHARGES, because the old version of this file had it
+// wrong in a way that cost real money:
 //
-// These are ESTIMATES, set 13 Oct 2026, not Craig's NZ Couriers account rates.
-// They are anchored on NZ Post's published 2026 retail prices with an account
-// discount assumed, because NZ Couriers do not publish a rate card:
+//   One ticket covers 5kg OR 0.025 m3, whichever runs out first.
+//   Each further ticket adds another 5kg / 0.025 m3.
 //
-//   within-island large parcel, first 5kg ... $12.90 retail
-//   nationwide (crossing Cook Strait) ....... $39.70 retail, $25.00 economy
-//   rural delivery .......................... $6.00 per item
+// There is no "volumetric weight" divisor and nothing gets gradually dearer as
+// the box grows. The cost is a STAIRCASE: you pay the same right up to a line,
+// and then you pay double. So the only question that matters is which side of
+// the line an order falls.
 //
-// Replace with Craig's real account rates when they arrive. All amounts are
-// CENTS, NZD, GST-inclusive.
+// The old table charged a base rate plus $8 per additional item, on the stated
+// belief that "a chock is its own parcel". It is not: THREE chocks go in one
+// carton (330 x 200 x 185mm), which is also what Craig tells customers to buy.
+// That table charged $29 to send three chocks to Auckland. The real price is
+// $12.90, because three chocks and a carton weigh 4.85kg and fit in one ticket.
+// It over-charged the most common order in the shop by $16.
 //
-// NOTE on nzSouth: Craig ships from Tauranga, so "South Island" really means
-// "crosses the Cook Strait" — that is the expensive leg, not a minor uplift.
-// The old $15.00 placeholder was the single biggest under-collection risk.
+// WHAT WE KNOW, AND FROM WHERE
+//   chock weight 1.5kg ........ Craig, by email, 1 Oct 2026
+//   carton 330 x 200 x 185mm .. Ben, 14 Oct 2026 (0.0122 m3 = half a ticket's
+//                               volume allowance, so volume never binds here;
+//                               weight always decides)
+//   ticket prices ............. NZ Post published retail, Oct 2026
 //
-// NOTE on extraItem: NZ Post charges each additional 5kg at the SAME rate as
-// the first, so a second chock is nearer a second ticket than a small add-on.
+// The prices below are RETAIL. Craig's Small Business Sending account pays
+// commercial rates, which are lower, so every figure here is a ceiling rather
+// than a guess - the shop collects slightly more than the freight costs, which
+// is the right direction to be wrong in.
 //
-// NOTE on volumetric weight: carriers charge the GREATER of actual weight and
-// volumetric weight, rounded up to the nearest 5kg. Box dimensions therefore
-// set the price as much as the product does — see the packaging item.
+// All amounts are CENTS, NZD, GST-inclusive.
 
 export const RATES = {
-  nzNorth: 1300,        // base, one item, North Island (within-island)
-  nzSouth: 2800,        // base, one item, South Island (crosses the Strait)
-  extraItem: 800,       // added per additional item in the order...
-  maxExtra: 2400,       // ...up to this much in total (caps at 3 extra items)
-  ruralSurcharge: 700,  // added when the address is rural
-  au: 6000,             // flat, Australia — UNVERIFIED, international is dear
+  // Craig ships from Tauranga. "North" is NZ Post's Within Island; "South"
+  // really means crossing Cook Strait, priced here at Economy Nationwide
+  // rather than the $39.70 express, because a bike chock is not urgent.
+  ticketNorth: 1290,
+  ticketSouth: 2500,
 
-  // A bag, not a carton. An order of nothing but small items (see catalog.js)
-  // goes in a courier satchel, and a satchel is flat-rated NATIONWIDE — there
-  // is no Cook Strait premium on a bag, which is why this one rate replaces
-  // BOTH nzNorth and nzSouth rather than sitting alongside them.
-  //
-  // Anchored on NZ Post's 2026 retail bag+ticket bundles, 3kg max:
-  //   XS bag (135 x 240mm) ... $9.10 each    S bag (190 x 280mm) ... $10.40
-  //   M  bag (257 x 325mm) ... $12.40
-  // $8.00 is those with the same account discount assumed elsewhere here.
-  //
-  // Without this, a $25 set of D Rings to Dunedin was quoted $28 freight —
-  // more than the product. Nobody was ever going to buy that.
-  smallNz: 800,
-  smallMaxItems: 4,     // past this it stops being one bag; fall back to a carton
+  ruralSurcharge: 700,  // additive, and still unverified against Craig's account
+  au: 6000,             // flat, Australia - UNVERIFIED, untouched by this rewrite
+
+  // A bag, not a carton. An order of nothing but accessories goes in a courier
+  // satchel, flat-rated NATIONWIDE - a satchel pays no Cook Strait premium,
+  // which is why this one rate replaces BOTH ticket prices rather than sitting
+  // alongside them. Without it a $25 set of D Rings to Dunedin was quoted $28
+  // of freight, more than the product.
+  bagNz: 800,
+  bagMaxItems: 4,
+  bagMaxWeightG: 3000,  // NZ Post's satchel limit. Four sets of tie-downs exceed it.
 };
+
+// One ticket's weight allowance.
+export const TICKET_WEIGHT_G = 5000;
+
+// What fits in one carton, and what the empty carton weighs.
+//
+// ! THE TIGHTEST NUMBER IN THIS FILE !
+// Three chocks and a carton = 3 x 1500 + 350 = 4850g, against a 5000g ticket.
+// That is 150g of headroom. If the packed carton actually weighs half a kilo,
+// a three-chock order silently becomes TWO tickets and the shop under-collects
+// by $12.90 (North) or $25.00 (South) on its most common order.
+//
+// Weigh one made-up, taped, ready-to-send carton and put the real number here.
+// Until then this is the one assumption in the file worth distrusting - which
+// is why there is a test below that states it out loud.
+export const CHOCKS_PER_CARTON = 3;
+export const CARTON_WEIGHT_G = 350;
 
 // Postcodes NZ Couriers treats as rural delivery.
 //
@@ -81,14 +99,11 @@ const CONTACT_US_POSTCODES = new Set(["8942"]); // Chatham Islands
 // sometimes spelled out in full.
 const RD_PATTERN = /\b(?:R\.?\s?D\.?|RURAL\s+DELIVERY)\s?\d{1,2}\b/i;
 
-// `itemCount` is everything in the cart; `largeCount` is just the chocks.
-// order.js splits them, so this file stays ignorant of the catalog's shape.
-//
-// The split matters twice over:
-//   - all small and few enough  -> one bag, one flat price
-//   - otherwise                 -> a carton, and ONLY the chocks add to it,
-//     because accessories ride along in a box that is going anyway
-export function quoteShipping({ country, postcode, text = "", itemCount, largeCount = itemCount, declaredRural = false }) {
+// `itemCount` is everything in the cart, `chockCount` just the chocks, and
+// `goodsWeightG` the weight of the products themselves (cartons added here).
+// order.js works those out from the catalog, so this file stays ignorant of
+// the catalog's shape.
+export function quoteShipping({ country, postcode, text = "", itemCount, chockCount = itemCount, goodsWeightG = 0, declaredRural = false }) {
   if (country === "AU") {
     return { amount: RATES.au, label: "Courier - Australia", rural: false, ruralReason: null, region: "AU" };
   }
@@ -102,40 +117,52 @@ export function quoteShipping({ country, postcode, text = "", itemCount, largeCo
   // NZ postcodes: 0000-6999 North Island, 7000-9999 South Island.
   const north = Number(postcode) < 7000;
 
-  // One bag, one flat price, no island split and no per-item extra — the
-  // whole point of a satchel is that everything goes in the one bag.
-  const bag = largeCount === 0 && itemCount <= RATES.smallMaxItems;
-  const base = bag ? RATES.smallNz : north ? RATES.nzNorth : RATES.nzSouth;
-
-  // Per-item extra counts CHOCKS only. A chock is its own parcel; a set of
-  // D rings is not, so it must not trigger a second ticket. This also stops
-  // the cliff the bag rate would otherwise create: without it, four sets of
-  // tie-downs cost $8 and five cost $52.
-  const extra = bag ? 0 : Math.min(Math.max(largeCount - 1, 0) * RATES.extraItem, RATES.maxExtra);
-
   // Three ways an address can be rural, and we record WHICH, because Craig
   // needs to know whether to trust it before he books the ticket.
   //
   // `declaredRural` is the customer ticking "this is a rural delivery address"
   // on the cart page. It is ADDITIVE ONLY: an unticked box can never cancel a
   // rural address we detected ourselves, or a customer could opt out of a
-  // surcharge the courier is going to charge Craig regardless.
+  // surcharge the courier charges Craig regardless.
   const ruralReason =
     RURAL_POSTCODES.has(postcode) ? "postcode"
     : RD_PATTERN.test(text)       ? "address"
     : declaredRural               ? "declared"
     : null;
   const rural = ruralReason !== null;
-  // Rural still applies to a bag: the courier charges rural delivery per item
-  // whatever it is packed in.
-  const amount = base + extra + (rural ? RATES.ruralSurcharge : 0);
+  const ruralCost = rural ? RATES.ruralSurcharge : 0;
+
+  // One bag, one flat price, no island split. Accessories only, few enough to
+  // fit, and light enough for a satchel - all three, or it travels as a carton.
+  const bag =
+    chockCount === 0 &&
+    itemCount <= RATES.bagMaxItems &&
+    goodsWeightG <= RATES.bagMaxWeightG;
+
+  if (bag) {
+    return {
+      amount: RATES.bagNz + ruralCost,
+      label: "Courier - New Zealand" + (rural ? " (rural delivery)" : ""),
+      rural, ruralReason, bag: true, cartons: 0, tickets: 1,
+      weightG: goodsWeightG,
+      region: north ? "NZ-North" : "NZ-South",
+    };
+  }
+
+  // Cartons are decided by how many chocks fit in one; accessories ride along
+  // in a box that is going anyway and never force another carton.
+  const cartons = Math.max(1, Math.ceil(chockCount / CHOCKS_PER_CARTON));
+  const weightG = goodsWeightG + cartons * CARTON_WEIGHT_G;
+
+  // You need at least one ticket per carton, and enough tickets to carry the
+  // weight. Whichever is greater.
+  const tickets = Math.max(cartons, Math.ceil(weightG / TICKET_WEIGHT_G));
+  const amount = tickets * (north ? RATES.ticketNorth : RATES.ticketSouth) + ruralCost;
 
   return {
     amount,
     label: "Courier - New Zealand" + (rural ? " (rural delivery)" : ""),
-    rural,
-    ruralReason,
-    bag,
+    rural, ruralReason, bag: false, cartons, tickets, weightG,
     region: north ? "NZ-North" : "NZ-South",
   };
 }

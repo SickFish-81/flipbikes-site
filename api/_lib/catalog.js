@@ -25,16 +25,34 @@
 //
 // A product with no `size` is treated as "large", deliberately: a new item can
 // never accidentally inherit the cheap rate by someone forgetting a field.
+// `weightG` is what the courier actually charges on. NZ Post sells a ticket per
+// 5kg, so weight is a price, not a detail.
+//
+// THE CHOCKS ARE CRAIG'S OWN NUMBER. Email, 1 Oct 2026: "The weight of each
+// chock is 1.5kg ... there is no minimum order quantity but it's most
+// economical to ship 3 at a go for freight." Three chocks and a carton come to
+// 4.85kg, which is UNDER NZ Post's 5kg ticket - so Craig's advice and the
+// freight price finally agree.
+//
+// THE ACCESSORY WEIGHTS ARE ESTIMATES and the only guesses left in here.
+// They matter solely on accessory-heavy orders: four sets of tie-downs weigh
+// more than two chocks do. Confirm them on the same kitchen scale that settles
+// the carton, and this comment goes away.
 export const PRODUCTS = [
-  { sku: "flip-starter-pack", name: "FLIP Starter Pack (1x Standard chock, 2x D rings, 2x tie-downs)", price: 27000, size: "large" },
-  { sku: "flip-g3",           name: "FLIP G3 Bike Chock",       price: 17900, size: "large" },
-  { sku: "flip-standard",     name: "FLIP Standard Bike Chock", price: 15000, size: "large" },
-  { sku: "flip-road",         name: "FLIP Road Bike Chock",     price: 24900, size: "large" },
-  { sku: "tie-downs",         name: "Tie Downs",                price: 5950,  size: "small" },
-  { sku: "d-rings",           name: "D Rings",                  price: 2500,  size: "small" },
+  { sku: "flip-starter-pack", name: "FLIP Starter Pack (1x Standard chock, 2x D rings, 2x tie-downs)", price: 27000, size: "large", weightG: 3200 },
+  { sku: "flip-g3",           name: "FLIP G3 Bike Chock",       price: 17900, size: "large", weightG: 1500 },
+  { sku: "flip-standard",     name: "FLIP Standard Bike Chock", price: 15000, size: "large", weightG: 1500 },
+  { sku: "flip-road",         name: "FLIP Road Bike Chock",     price: 24900, size: "large", weightG: 1500 },
+  { sku: "tie-downs",         name: "Tie Downs",                price: 5950,  size: "small", weightG: 1000 },  // ESTIMATE
+  { sku: "d-rings",           name: "D Rings",                  price: 2500,  size: "small", weightG: 350 },   // ESTIMATE
 ];
 
 export const isSmall = (product) => product?.size === "small";
+
+// A product with no weight is treated as a chock's worth, deliberately: a new
+// item that someone forgot to weigh must not ship as though it were free. The
+// same reasoning as `size` defaulting to "large".
+export const weightOf = (product) => (typeof product?.weightG === "number" ? product.weightG : 1500);
 
 // Shipping is priced per order from the destination: see shipping.js.
 
