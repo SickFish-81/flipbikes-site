@@ -93,3 +93,54 @@ export async function logEmail({ kind, to, subject, resendId, sessionId, status 
     });
   }
 }
+
+// ------------------------------------------------------------------- labels
+//
+// What the print agent polls for, and how it reports back. See
+// tools/print-agent/README.md for the other half of this contract and
+// migration 0085 in the betterservice-app repo for the columns.
+
+// Orders whose label exists, has been fetched, and has NOT printed yet.
+//
+// All three conditions matter, and the middle one is the one that keeps the
+// agent honest: a row is only offered once there is a PDF to give it.
+// `label_fetched_at is null` means the consignment exists but the document
+// doesn't, so handing that row over would have the agent fail, report an
+// error and try again a minute later, forever. Until the consignment step is
+// built nothing satisfies this and the agent is correctly told "nothing to
+// print" — which is the truth, not a failure.
+//
+// Oldest first: if two labels are waiting, the customer who has been waiting
+// longer gets their parcel moving first.
+export async function pendingLabels(limit = 20) {
+  const cols = "invoice_number,name,consignment_id,tracking_number,label_fetched_at,printed_at";
+  return await call(
+    `flip_orders?select=${cols}` +
+      "&printed_at=is.null&consignment_id=not.is.null&label_fetched_at=not.is.null" +
+      `&order=created_at.asc&limit=${Number(limit) || 20}`
+  );
+}
+
+export async function orderByInvoiceNumber(invoiceNumber) {
+  const rows = await call(
+    `flip_orders?invoice_number=eq.${Number(invoiceNumber)}` +
+      "&select=session_id,invoice_number,name,printed_at,consignment_id,label_error"
+  );
+  return rows[0] || null;
+}
+
+// Paper came out. Recorded ONCE: if it is already stamped we keep the first
+// time, because the question this column answers is "when did this label
+// print", and a second poll re-printing it does not change that answer. It
+// also clears whatever error was there — the thing that was wrong isn't any
+// more.
+export async function markLabelPrinted(sessionId) {
+  await patchOrder(sessionId, { printed_at: new Date().toISOString(), label_error: null });
+}
+
+// It didn't print, and this is why, in words Craig can act on. printed_at is
+// deliberately left alone: the label stays pending, so the next poll tries
+// again. A label that silently stops being offered is how an order never goes.
+export async function markLabelError(sessionId, message) {
+  await patchOrder(sessionId, { label_error: String(message ?? "").slice(0, 500) || "unknown error" });
+}

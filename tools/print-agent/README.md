@@ -95,11 +95,40 @@ unreachable one both report failure rather than silently passing.
 
 No printer required to run them.
 
-## Still to build on the app side
+## The app side
 
-This agent expects two endpoints that **don't exist yet**:
+Both endpoints now exist (20 Oct 2026):
 
-- `GET /api/labels/pending` → `{ "labels": [ { id, pdf_base64 | pdf_url, name, tracking_number } ] }`
+- `GET /api/labels/pending` → `{ "labels": [ { id, name, consignment_id, tracking_number, pdf_url } ] }`
 - `POST /api/labels/:id/printed` → `{ printed: true }`, or `{ printed: false, error }`
+
+`id` is the **invoice number** — short enough to read out over the phone, and
+it keeps a customer's Stripe session id out of this agent's log file.
+
+Both want `Authorization: Bearer $FLIP_AGENT_TOKEN`, and
+**`FLIP_AGENT_TOKEN` is not set in Vercel yet**, so today both answer
+`503 Label printing isn't switched on`. That is deliberate: an unset token is a
+refusal, never a free pass. Set the same value here and in Vercel.
+
+### It will say "nothing to print" for a while yet, and that is correct
+
+A label is only offered once it has a consignment id **and** a stored PDF. The
+consignment step is the part still to build, so nothing satisfies that
+condition and `pending` returns `[]`. Offering a label with no PDF would have
+this agent fail, report the error, and retry a minute later, forever.
+
+`GET /api/labels/:id/pdf` — which `pdf_url` points at — arrives with that same
+piece of work.
+
+### What is guaranteed to you
+
+- **A failed label stays pending.** Reporting `printed: false` records the
+  reason and does *not* stamp `printed_at`, so the next poll tries again.
+  Nothing makes a label quietly disappear.
+- **Reporting the same print twice is safe.** The first timestamp wins and the
+  reply says `already: true`.
+- **A reported failure gets a 200.** The request succeeded — we now know the
+  label didn't print. Answering 4xx would make you treat our record-keeping as
+  broken and give up on the message that says something needs attention.
 
 See `claude/flip-label-automation.md` in the project for the rest of the plan.
