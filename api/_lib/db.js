@@ -166,3 +166,33 @@ export async function labelImage(invoiceNumber) {
   if (!r.ok) throw new Error(`Storage said ${r.status}: ${await r.text()}`);
   return new Uint8Array(await r.arrayBuffer());
 }
+
+// File the carrier's label so it can be printed later, and re-printed without
+// going back to the carrier. One PNG per order, named by invoice number — the
+// same name labelImage() reads back.
+//
+// `upsert: true` because this must be safe to repeat: a retried consignment
+// step that re-fetched the same label should overwrite its own file rather
+// than fail on a name that already exists.
+export async function storeLabelImage(invoiceNumber, bytes, contentType = "image/png") {
+  const r = await fetch(`${url()}/storage/v1/object/flip-labels/${Number(invoiceNumber)}.png`, {
+    method: "POST",
+    headers: {
+      apikey: key(),
+      Authorization: `Bearer ${key()}`,
+      "Content-Type": contentType,
+      "x-upsert": "true",
+    },
+    body: bytes,
+  });
+  if (!r.ok) throw new Error(`Storage upload said ${r.status}: ${await r.text()}`);
+}
+
+// Everything the consignment step needs to book a parcel: who it goes to,
+// what is in it, and whether it has been booked already.
+export async function orderForConsignment(sessionId) {
+  const cols = "session_id,invoice_number,name,email,phone,country,address,items," +
+    "shipping_amount,consignment_id,tracking_number,label_fetched_at,label_error";
+  const rows = await call(`flip_orders?session_id=eq.${encodeURIComponent(sessionId)}&select=${cols}`);
+  return rows[0] || null;
+}
