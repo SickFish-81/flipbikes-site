@@ -16,6 +16,8 @@ import assert from "node:assert/strict";
 
 import pending from "../api/labels/pending.js";
 import printed from "../api/labels/[id]/printed.js";
+import labelPdf from "../api/labels/[id]/pdf.js";
+import { buildLabelSheet } from "../api/_lib/labelSheet.js";
 
 const TOKEN = "agent_test_token";
 
@@ -34,6 +36,14 @@ const asAgent = (extra = {}) => ({ method: "GET", headers: { authorization: `Bea
 // and `patches` records what the endpoint wrote so we can assert on it.
 let orders = [];
 let patches = [];
+// The stored carrier label, keyed by invoice number. null = none filed.
+let labels = {};
+
+// A real 1x1 PNG. Small enough to inline, valid enough for pdf-lib to embed.
+const TINY_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
 
 beforeEach(() => {
   process.env.FLIP_AGENT_TOKEN = TOKEN;
@@ -41,9 +51,20 @@ beforeEach(() => {
   process.env.SUPABASE_SERVICE_ROLE_KEY = "service_fake";
   orders = [];
   patches = [];
+  labels = {};
 
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
+
+    // Supabase Storage, where the carrier's label is filed.
+    const m = u.match(/\/storage\/v1\/object\/flip-labels\/(\d+)\.png/);
+    if (m) {
+      const png = labels[m[1]];
+      return png
+        ? new Response(png, { status: 200, headers: { "Content-Type": "image/png" } })
+        : new Response("not found", { status: 404 });
+    }
+
     if (!u.includes("/rest/v1/flip_orders")) throw new Error(`unexpected fetch: ${u}`);
 
     if ((opts.method || "GET") === "PATCH") {
@@ -284,4 +305,80 @@ test("an unconfigured database is 503, not an empty list", async () => {
   await pending(asAgent(), r);
   assert.equal(r.code, 503);
   assert.equal(r.body.labels, undefined);
+});
+
+
+// ------------------------------------------------------------- the A4 sheet
+
+const sheetReq = (id) => ({ method: "GET", headers: { authorization: `Bearer ${TOKEN}` }, query: { id: String(id) } });
+
+test("the sheet builder makes an A4 PDF", async () => {
+  const pdf = await buildLabelSheet({
+    labelPng: TINY_PNG,
+    order: { invoice_number: 1004, name: "A Customer", items: [{ qty: 1, sku: "flip-g3", name: "G3" }] },
+  });
+  assert.equal(Buffer.from(pdf.slice(0, 5)).toString("latin1"), "%PDF-");
+
+  // Read the page size back rather than grepping the bytes: pdf-lib compresses
+  // object streams, so /MediaBox is not reliably present as plain text.
+  const { PDFDocument } = await import("pdf-lib");
+  const [page] = (await PDFDocument.load(pdf)).getPages();
+  const { width, height } = page.getSize();
+  assert.ok(Math.abs(width - 595.28) < 0.01, `A4 width, got ${width}`);
+  assert.ok(Math.abs(height - 841.89) < 0.01, `A4 height, got ${height}`);
+});
+
+test("a name with a macron does not throw — the whole point of the embedded font", async () => {
+  // pdf-lib THROWS on a macron with a built-in font. That is what left
+  // Betterservice invoice #01065 with no PDF at all.
+  const pdf = await buildLabelSheet({
+    labelPng: TINY_PNG,
+    order: { invoice_number: 1, name: "Hine Māhia Ngātai-Whakaawe",
+             address: { formatted: "12 Ōhauiti Road, Tauranga" },
+             items: [{ qty: 1, sku: "flip-g3", name: "G3" }] },
+  });
+  assert.ok(pdf.length > 1000);
+});
+
+test("no label image is a refusal, not a blank sheet", async () => {
+  await assert.rejects(() => buildLabelSheet({ labelPng: new Uint8Array(), order: {} }),
+    /no label image/i);
+});
+
+test("the sheet endpoint returns a PDF once a label is filed", async () => {
+  orders = [order({ invoice_number: 1004, consignment_id: "C1", label_fetched_at: "x" })];
+  labels["1004"] = TINY_PNG;
+  const r = res();
+  await labelPdf(sheetReq(1004), r);
+  assert.equal(r.code, 200);
+  assert.equal(r.headers["Content-Type"], "application/pdf");
+  assert.match(r.headers["Content-Disposition"], /FLIP-1004-label\.pdf/);
+  assert.equal(r.headers["Cache-Control"], "no-store");
+  assert.equal(Buffer.from(r.body.slice(0, 5)).toString("latin1"), "%PDF-");
+});
+
+test("no label filed yet is a 404, not a 500", async () => {
+  orders = [order({ invoice_number: 1004 })];
+  const r = res();
+  await labelPdf(sheetReq(1004), r);
+  assert.equal(r.code, 404);
+  assert.match(r.body.error, /No label has been filed/);
+});
+
+test("the sheet needs the token too", async () => {
+  orders = [order({ invoice_number: 1004 })];
+  labels["1004"] = TINY_PNG;
+  const r = res();
+  await labelPdf({ method: "GET", headers: {}, query: { id: "1004" } }, r);
+  assert.equal(r.code, 401);
+});
+
+test("the sheet rejects a junk id and an unknown order", async () => {
+  const a = res();
+  await labelPdf(sheetReq("nope"), a);
+  assert.equal(a.code, 400);
+
+  const b = res();
+  await labelPdf(sheetReq(4242), b);
+  assert.equal(b.code, 404);
 });

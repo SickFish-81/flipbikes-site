@@ -144,3 +144,25 @@ export async function markLabelPrinted(sessionId) {
 export async function markLabelError(sessionId, message) {
   await patchOrder(sessionId, { label_error: String(message ?? "").slice(0, 500) || "unknown error" });
 }
+
+// Everything the picking half of the label sheet needs.
+export async function orderForLabel(invoiceNumber) {
+  const cols = "session_id,invoice_number,name,created_at,address,items,shipping_amount,printed_at,consignment_id";
+  const rows = await call(`flip_orders?invoice_number=eq.${Number(invoiceNumber)}&select=${cols}`);
+  return rows[0] || null;
+}
+
+// The carrier's label, as stored by the consignment step: one PNG per order in
+// the `flip-labels` bucket, named by invoice number. Returns null when there
+// isn't one, which is a normal state and not an error.
+//
+// Storage is not PostgREST, so it does not go through call() — different base
+// path, and the body is bytes rather than JSON.
+export async function labelImage(invoiceNumber) {
+  const r = await fetch(`${url()}/storage/v1/object/flip-labels/${Number(invoiceNumber)}.png`, {
+    headers: { apikey: key(), Authorization: `Bearer ${key()}` },
+  });
+  if (r.status === 404 || r.status === 400) return null;
+  if (!r.ok) throw new Error(`Storage said ${r.status}: ${await r.text()}`);
+  return new Uint8Array(await r.arrayBuffer());
+}
