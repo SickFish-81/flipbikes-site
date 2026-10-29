@@ -62,6 +62,7 @@ import json
 import os
 import socket
 import struct
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -69,6 +70,8 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+
+import pwg_raster
 
 # ---------------------------------------------------------------- configuration
 
@@ -129,7 +132,8 @@ def _attr(tag, name, value):
     return struct.pack(">BH", tag, len(name_b)) + name_b + struct.pack(">H", len(payload)) + payload
 
 
-def build_print_job(printer_uri, pdf_bytes, job_name="FLIP label", request_id=1):
+def build_print_job(printer_uri, pdf_bytes, job_name="FLIP label", request_id=1,
+                    doc_format="application/pdf"):
     """The exact bytes of an IPP Print-Job request.
 
     attributes-charset MUST come first and attributes-natural-language second —
@@ -143,7 +147,7 @@ def build_print_job(printer_uri, pdf_bytes, job_name="FLIP label", request_id=1)
     out += _attr(TAG_URI, "printer-uri", printer_uri)
     out += _attr(TAG_NAME, "requesting-user-name", "flip-label-agent")
     out += _attr(TAG_NAME, "job-name", job_name)
-    out += _attr(TAG_MIMETYPE, "document-format", "application/pdf")
+    out += _attr(TAG_MIMETYPE, "document-format", doc_format)
 
     out += struct.pack(">B", TAG_JOB_ATTRS)
     # The duplex trap. Not optional.
@@ -164,30 +168,210 @@ def ipp_status(response_bytes):
     return struct.unpack(">H", response_bytes[2:4])[0]
 
 
-def ipp_print(host, pdf_bytes, job_name="FLIP label"):
-    """Send straight to the printer. Returns (ok, detail)."""
-    if ":" in host:
-        hostport = host
-    else:
-        hostport = f"{host}:631"
-    printer_uri = f"ipp://{hostport}/ipp/print"
-    url = f"http://{hostport}/ipp/print"
-    body = build_print_job(printer_uri, pdf_bytes, job_name)
+
+
+# ------------------------------------------------- asking the printer about itself
+#
+# THE LESSON OF 28 OCT 2026, in one sentence: do not assume a printer can read
+# the thing you are sending it, and do not believe "accepted" means "printed".
+#
+# The Brother HL-L2375DW refuses application/pdf outright (0x040a) and ACCEPTS
+# the same bytes as application/octet-stream before silently binning them. An
+# hour went into that, plus a power cycle to clear the job it was stuck on.
+
+
+def _ipp_request(hostport, op, extra=b"", payload=b"", timeout=None):
+    uri = f"ipp://{hostport}/ipp/print"
+    body = struct.pack(">HHI", 0x0200, op, 1)
+    body += struct.pack(">B", TAG_OPERATION_ATTRS)
+    body += _attr(TAG_CHARSET, "attributes-charset", "utf-8")
+    body += _attr(TAG_LANGUAGE, "attributes-natural-language", "en")
+    body += _attr(TAG_URI, "printer-uri", uri)
+    body += _attr(TAG_NAME, "requesting-user-name", "flip-label-agent")
+    body += extra
+    body += struct.pack(">B", TAG_END_OF_ATTRS)
+    body += payload
     req = urllib.request.Request(
-        url, data=body, method="POST",
+        f"http://{hostport}/ipp/print", data=body, method="POST",
+        headers={"Content-Type": "application/ipp", "Content-Length": str(len(body))},
+    )
+    with urllib.request.urlopen(req, timeout=timeout or HTTP_TIMEOUT) as resp:
+        return resp.read()
+
+
+def ipp_attributes(reply):
+    """{name: [values]} out of an IPP reply. Multi-value attributes repeat the
+    tag with an empty name, which is why the last seen name is carried."""
+    out, name, i = {}, None, 8
+    while i < len(reply):
+        tag = reply[i]
+        if tag in (0x01, 0x02, 0x03, 0x04, 0x05):
+            i += 1
+            if tag == 0x03:
+                break
+            continue
+        if i + 3 > len(reply):
+            break
+        nlen = struct.unpack(">H", reply[i + 1:i + 3])[0]
+        nm = reply[i + 3:i + 3 + nlen].decode("utf-8", "replace")
+        j = i + 3 + nlen
+        vlen = struct.unpack(">H", reply[j:j + 2])[0]
+        val = reply[j + 2:j + 2 + vlen]
+        if nlen:
+            name = nm
+        # 0x21 is integer, 0x23 is ENUM — and job-state and printer-state are
+        # both enums. Decoding only 0x21 reads a state back as control
+        # characters and makes every job look like it never printed, which is
+        # exactly how this was found.
+        if tag in (0x21, 0x23) and len(val) == 4:
+            v = struct.unpack(">i", val)[0]
+        else:
+            v = val.decode("utf-8", "replace")
+        out.setdefault(name, []).append(v)
+        i = j + 2 + vlen
+    return out
+
+
+def printer_formats(hostport):
+    """What this printer will actually accept. Empty list = we could not ask."""
+    try:
+        reply = _ipp_request(hostport, 0x000B)
+    except Exception as e:  # noqa: BLE001 - any failure here means "don't know"
+        log(f"  could not ask {hostport} what it accepts: {e}")
+        return []
+    return [f for f in ipp_attributes(reply).get("document-format-supported", [])
+            if isinstance(f, str)]
+
+
+def job_finished(hostport, job_id, wait_secs=120):
+    """Did the paper actually come out? Returns (ok, detail).
+
+    'Accepted' is not 'printed'. On 28 Oct the printer sat in deep sleep with
+    its network card awake, accepting jobs and printing none of them, while
+    reporting printer-state-reasons: none. The only way to know is to watch the
+    job reach state 9 (completed) rather than 7/8 (cancelled/aborted)."""
+    STATES = {3: "pending", 4: "held", 5: "processing", 6: "stopped",
+              7: "cancelled", 8: "aborted", 9: "completed"}
+    deadline = time.time() + wait_secs
+    last = None
+    while time.time() < deadline:
+        try:
+            reply = _ipp_request(hostport, 0x0009,  # Get-Job-Attributes
+                                 extra=_attr(TAG_INTEGER, "job-id", job_id))
+            attrs = ipp_attributes(reply)
+        except Exception as e:  # noqa: BLE001
+            return False, f"could not read job {job_id} back: {e}"
+        state = (attrs.get("job-state") or [None])[0]
+        last = STATES.get(state, state)
+        if state == 9:
+            return True, "printed"
+        if state in (7, 8):
+            why = ", ".join(str(r) for r in attrs.get("job-state-reasons", [])) or "no reason given"
+            return False, f"the printer {last} the job ({why})"
+        time.sleep(3)
+    return False, (f"job {job_id} was accepted but never printed - still {last} after "
+                   f"{wait_secs}s. Is the printer asleep, or stuck on an earlier job?")
+
+
+# ------------------------------------------------------------------ making dots
+
+
+def rasterise(pdf_bytes, dpi=300):
+    """A PDF page as a greyscale bitmap, or None if this machine can't.
+
+    Deliberately optional. A Mac has CUPS, which does this conversion itself on
+    the way to an AirPrint printer, so os_print() needs none of it. This exists
+    for the case proved on 28 Oct: printing from a machine where the printer
+    isn't installed at all."""
+    try:
+        from PIL import Image  # noqa: PLC0415 - optional, and only on this path
+    except ImportError:
+        return None
+    for tool in (["pdftoppm", "-r", str(dpi), "-gray", "-singlefile", "-png"],
+                 None):
+        if tool is None:
+            break
+        if not shutil.which(tool[0]):
+            continue
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "in.pdf")
+            with open(src, "wb") as fh:
+                fh.write(pdf_bytes)
+            out = os.path.join(d, "page")
+            try:
+                subprocess.run(tool + [src, out], capture_output=True, timeout=120, check=True)
+            except (subprocess.SubprocessError, OSError):
+                continue
+            png = out + ".png"
+            if os.path.exists(png):
+                return Image.open(png).convert("L")
+    if shutil.which("gs"):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "in.pdf")
+            with open(src, "wb") as fh:
+                fh.write(pdf_bytes)
+            out = os.path.join(d, "page.png")
+            try:
+                subprocess.run(["gs", "-q", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pnggray",
+                                f"-r{dpi}", f"-sOutputFile={out}", src],
+                               capture_output=True, timeout=120, check=True)
+            except (subprocess.SubprocessError, OSError):
+                return None
+            if os.path.exists(out):
+                return Image.open(out).convert("L")
+    return None
+
+
+def ipp_print(host, pdf_bytes, job_name="FLIP label", verify=True):
+    """Send straight to the printer, in a format it has told us it can read.
+
+    Returns (ok, detail). Never guesses: if the printer cannot take a PDF and
+    this machine cannot make dots, it says so and lets the caller fall back to
+    the operating system's queue, which can do both."""
+    hostport = host if ":" in host else f"{host}:631"
+    printer_uri = f"ipp://{hostport}/ipp/print"
+
+    formats = printer_formats(hostport)
+    payload, doc_format = pdf_bytes, "application/pdf"
+
+    if formats and "application/pdf" not in formats:
+        if "image/pwg-raster" not in formats:
+            return False, (f"{hostport} accepts {', '.join(formats)} - none of which we can "
+                           "produce. Use the OS print queue instead.")
+        img = rasterise(pdf_bytes)
+        if img is None:
+            return False, (f"{hostport} has no PDF interpreter and this machine has no "
+                           "rasteriser (needs Pillow plus pdftoppm or gs). Use the OS "
+                           "print queue instead - CUPS does the conversion itself.")
+        payload, doc_format = pwg_raster.encode(img), "image/pwg-raster"
+
+    body = build_print_job(printer_uri, payload, job_name, doc_format=doc_format)
+    req = urllib.request.Request(
+        f"http://{hostport}/ipp/print", data=body, method="POST",
         headers={"Content-Type": "application/ipp", "Content-Length": str(len(body))},
     )
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        # Generous: the printer holds the reply while it spools a big raster.
+        with urllib.request.urlopen(req, timeout=max(HTTP_TIMEOUT, 120)) as resp:
             reply = resp.read()
     except (urllib.error.URLError, socket.timeout, OSError) as e:
         return False, f"IPP to {hostport} failed: {e}"
+
     code = ipp_status(reply)
     if code is None:
         return False, f"IPP to {hostport}: reply too short to be valid ({len(reply)} bytes)"
-    if code < 0x0100:
-        return True, f"IPP accepted by {hostport} (status 0x{code:04x})"
-    return False, f"IPP rejected by {hostport} (status 0x{code:04x})"
+    if code >= 0x0100:
+        return False, f"IPP rejected by {hostport} (status 0x{code:04x}, {doc_format})"
+
+    sent = f"{doc_format}, {len(payload):,} bytes"
+    if not verify:
+        return True, f"IPP accepted by {hostport} ({sent})"
+
+    job_id = (ipp_attributes(reply).get("job-id") or [None])[0]
+    if not isinstance(job_id, int):
+        return True, f"IPP accepted by {hostport} ({sent}); no job id to check"
+    ok, how = job_finished(hostport, job_id)
+    return ok, f"{hostport} job {job_id} ({sent}): {how}"
 
 
 # --------------------------------------------------- the operating system's way

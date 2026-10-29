@@ -1,0 +1,5 @@
+# Python's compiled cache. Machine-specific, regenerated on every run, and it
+# was being committed — so a .pyc built on one machine showed up as a change on
+# another for no reason anybody could see.
+__pycache__/
+*.pyc
