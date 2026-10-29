@@ -3,3 +3,8 @@
 # another for no reason anybody could see.
 __pycache__/
 *.pyc
+
+# The filled-in copy of the Mac agent's settings. It holds FLIP_AGENT_TOKEN,
+# which is what proves a machine is allowed to see customers' names and
+# addresses. The .example beside it is what ships.
+mac/flip-agent.conf

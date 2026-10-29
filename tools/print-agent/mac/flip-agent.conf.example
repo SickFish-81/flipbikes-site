@@ -1,0 +1,14 @@
+# FLIP label agent — settings. Edit the two blanks, save, then double-click
+# flip-label-agent.command.
+
+# The name of the printer as this Mac knows it. To see the list, open Terminal
+# and run:  lpstat -p
+# It is usually something like Brother_HL_L2375DW.
+FLIP_PRINTER=""
+
+# The shop's key. Ben has this. It is what proves to the website that this Mac
+# is allowed to see customers' labels, so treat it like a password.
+FLIP_AGENT_TOKEN=""
+
+# How often to check, in seconds. 60 is once a minute.
+FLIP_POLL_SECS=60
