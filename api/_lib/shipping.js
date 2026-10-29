@@ -36,7 +36,22 @@ export const RATES = {
   // Craig ships from Tauranga. "North" is NZ Post's Within Island; "South"
   // really means crossing Cook Strait, priced here at Economy Nationwide
   // rather than the $39.70 express, because a bike chock is not urgent.
-  ticketNorth: 1290,
+  // 29 Oct 2026: raised from $12.90 after reading GoSweetSpot's actual rate
+  // card for this address. A 3-chock carton is 4.85kg, and the cheapest
+  // carrier that will COLLECT from Te Puke (NZ Post Domestic — Post Haste and
+  // NZ Couriers class us out of zone and want a drop-off at Jellicoe Street)
+  // charges $13.65 + GST = $15.70 to the lower North Island. At $12.90 the
+  // shop was losing $2.80 on the single most common order in it — the one
+  // Craig actively recommends, "most economical to ship 3 at a go".
+  //
+  // $15.90 covers it with little to spare, and over-collects on two-carton
+  // orders ($31.80 against a real $23.68). That is the wrong shape and we know
+  // it: GoSweetSpot bills LINEARLY BY THE KILO, not in 5kg tickets — "your 7kg
+  // parcel would normally cost you a 10kg prepaid ticket; you'll only pay for
+  // 7kgs". This whole staircase is an approximation of a model that no longer
+  // applies, and it goes the day live rates land. Until then, over-collecting
+  // a little beats under-collecting on the order most likely to arrive.
+  ticketNorth: 1590,
   ticketSouth: 2500,
 
   ruralSurcharge: 700,  // additive, and still unverified against Craig's account
