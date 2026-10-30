@@ -1,0 +1,183 @@
+// Run with: npm test
+//
+// Live courier rates at checkout, and — more importantly — every way they can
+// fail without costing a sale.
+//
+// The rule these tests exist to hold: THE SHOP MUST ALWAYS RETURN A PRICE. A
+// missing key, a slow carrier, a refused call, an address nobody who collects
+// will quote — all of them land on the hand-kept table, and the customer never
+// finds out. A sale lost to somebody else's outage is worse than a dollar of
+// freight.
+
+import { test, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+
+import { priceOrder } from "../api/_lib/order.js";
+import { liveShipping } from "../api/_lib/liveRates.js";
+
+const ADDRESS = {
+  manual: { line1: "12 Example Road", suburb: "Springvale", city: "Whanganui", postcode: "4412" },
+};
+const THREE_CHOCKS = [{ sku: "flip-standard", qty: 3 }];
+
+let calls = [];
+let sent = [];   // the bodies we posted to the carrier
+let reply;      // what the fake carrier answers
+let fail;       // make the call blow up
+
+function quoted(available, rejected = []) {
+  return { Available: available, Rejected: rejected };
+}
+
+beforeEach(() => {
+  process.env.GSS_ACCESS_KEY = "key_fake";
+  process.env.GSS_SITE_ID = "4242";
+  process.env.GSS_BASE_URL = "https://carrier.fake";
+  delete process.env.FLIP_COLLECTING_CARRIERS;
+  delete process.env.FLIP_FREIGHT_MARKUP;
+  calls = [];
+  sent = [];
+  fail = null;
+  reply = quoted([
+    { QuoteId: "q1", CarrierName: "NZ Post Domestic", Charge: 13.65, IsRuralDelivery: false, IsResidentialDelivery: true },
+    { QuoteId: "q2", CarrierName: "Post Haste", Charge: 13.27, IsRuralDelivery: false, IsResidentialDelivery: true },
+  ]);
+
+  globalThis.fetch = async (url, opts = {}) => {
+    calls.push(String(url));
+    if (opts.body) sent.push(JSON.parse(opts.body));
+    if (fail) throw new Error(fail);
+    return new Response(JSON.stringify(reply), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
+  };
+});
+
+const carrierCalls = () => calls.filter((c) => c.includes("carrier.fake"));
+const price = async (items = THREE_CHOCKS) =>
+  await priceOrder({ items, country: "NZ", address: ADDRESS });
+
+// ------------------------------------------------------------- the happy path
+
+test("the carrier's price is used, with GST and the markup on top", async () => {
+  const o = await price();
+  // NZ Post Domestic is the only carrier that collects from Te Puke. $13.65
+  // ex GST, x1.08 markup, x1.15 GST = $16.95, rounded up to the next 50c.
+  assert.equal(o.shipping.source, "carrier");
+  assert.equal(o.shipping.carrier, "NZ Post Domestic");
+  assert.equal(o.shipping.amount, 1700);
+  assert.equal(o.shipping.exGstCents, 1365);
+});
+
+test("the CHEAPEST carrier is not chosen if it will not collect", async () => {
+  // Post Haste is 38c cheaper and would make Craig drive to Jellicoe Street.
+  const o = await price();
+  assert.equal(o.shipping.carrier, "NZ Post Domestic");
+  assert.notEqual(o.shipping.carrier, "Post Haste");
+});
+
+test("which carriers collect can be changed without a deploy", async () => {
+  process.env.FLIP_COLLECTING_CARRIERS = "NZ Post Domestic, Post Haste";
+  const o = await price();
+  assert.equal(o.shipping.carrier, "Post Haste", "now the cheaper one is allowed");
+});
+
+test("rural comes from the carrier, not from our guess or the customer", async () => {
+  reply = quoted([{ QuoteId: "q", CarrierName: "NZ Post Domestic", Charge: 20.00, IsRuralDelivery: true }]);
+  const o = await price();
+  assert.equal(o.shipping.rural, true);
+  assert.equal(o.shipping.ruralReason, "carrier");
+  assert.match(o.shipping.label, /rural delivery/);
+});
+
+test("the carrier's residential flag is carried through", async () => {
+  const o = await price();
+  assert.equal(o.shipping.residential, true);
+});
+
+// ------------------------------------------------- every way it must not break
+
+test("no key: the table answers and the carrier is never called", async () => {
+  delete process.env.GSS_ACCESS_KEY;
+  const o = await price();
+  assert.equal(o.shipping.source, "table");
+  assert.equal(o.shipping.amount, 1590, "ticketNorth");
+  assert.equal(carrierCalls().length, 0);
+});
+
+test("the carrier throws: the table answers and the sale proceeds", async () => {
+  fail = "network is on fire";
+  const o = await price();
+  assert.equal(o.shipping.source, "table");
+  assert.ok(o.shipping.amount > 0);
+  assert.equal(o.error, undefined);
+});
+
+test("nobody who collects quoted: the table answers", async () => {
+  reply = quoted([{ QuoteId: "q", CarrierName: "Post Haste", Charge: 9.99 }]);
+  const o = await price();
+  assert.equal(o.shipping.source, "table");
+});
+
+test("no quotes at all: the table answers", async () => {
+  reply = quoted([], [{ Carrier: "NZ Post Domestic", Reason: "No service to this postcode" }]);
+  const o = await price();
+  assert.equal(o.shipping.source, "table");
+});
+
+test("a quote with no price is ignored rather than treated as free", async () => {
+  reply = quoted([{ QuoteId: "q", CarrierName: "NZ Post Domestic" }]);
+  const o = await price();
+  assert.equal(o.shipping.source, "table");
+});
+
+test("liveShipping itself never throws", async () => {
+  globalThis.fetch = async () => { throw new Error("boom"); };
+  const out = await liveShipping({ order: { address: { country: "NZ" } }, parcel: { cartons: 1, weightG: 5000 } });
+  assert.equal(out, null);
+});
+
+// ------------------------------------------------------ validation still wins
+
+test("a bad postcode is still refused, and no carrier is asked", async () => {
+  const o = await priceOrder({
+    items: THREE_CHOCKS, country: "NZ",
+    address: { manual: { line1: "1 X St", suburb: "Y", city: "Z", postcode: "abc" } },
+  });
+  assert.match(o.error, /postcode/i);
+  assert.equal(carrierCalls().length, 0, "no point asking a carrier about an address we reject");
+});
+
+test("Australia is left to the table", async () => {
+  const o = await priceOrder({
+    items: THREE_CHOCKS, country: "AU",
+    address: { manual: { line1: "1 X St", suburb: "Y", city: "Sydney", postcode: "2000" } },
+  });
+  assert.equal(o.shipping.source, "table");
+  assert.equal(carrierCalls().length, 0);
+});
+
+// ----------------------------------------------------------------- the parcel
+
+test("the carrier is asked about the parcel the TABLE worked out", async () => {
+  await price([{ sku: "flip-g3", qty: 5 }]);
+
+  assert.equal(carrierCalls().length, 1, "asked once, not per carrier");
+  const body = sent[0];
+
+  // Five chocks are two cartons (three fit in one), 5 x 1500g + 2 x 350g.
+  // The table is the only thing that knows that, and the carrier must be
+  // asked about the same parcel we would actually send — otherwise the price
+  // the customer pays is for a parcel that does not exist.
+  assert.equal(body.Packages.length, 2);
+  assert.equal(body.Packages[0].Length, 37, "centimetres, not metres");
+  assert.equal(body.Packages[0].Kg, 4.1, "8.2kg split across two cartons");
+  assert.equal(body.Destination.Address.PostCode, "4412");
+  assert.ok(body.Destination.Address.Suburb, "an empty suburb is refused outright");
+});
+
+test("an accessories-only order is quoted as one satchel", async () => {
+  await price([{ sku: "d-rings", qty: 2 }]);
+  assert.equal(sent[0].Packages.length, 1);
+  assert.equal(sent[0].Packages[0].Name, "Satchel");
+});

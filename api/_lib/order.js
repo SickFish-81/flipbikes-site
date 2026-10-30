@@ -4,8 +4,8 @@
 // charged — both run exactly this.
 
 import { parseCart, isSmall, weightOf } from "./catalog.js";
-import { quoteShipping } from "./shipping.js";
 import { details, placesConfigured } from "./places.js";
+import { liveShipping, tableShipping } from "./liveRates.js";
 
 const clean = (v, max = 120) => String(v ?? "").replace(/[\r\n\t]+/g, " ").trim().slice(0, max);
 
@@ -55,7 +55,11 @@ export async function priceOrder({ items, country, address: addressInput, sessio
   // What the courier charges on. Products only - quoteShipping adds the
   // cartons, since it is the thing that knows how many there are.
   const goodsWeightG = cart.lines.reduce((s, l) => s + weightOf(l.product) * l.qty, 0);
-  const shipping = quoteShipping({
+  // The table first, always — not because we prefer it, but because it is the
+  // only thing that knows the PARCEL: how many cartons this order takes and
+  // what they weigh. The carrier needs that to quote at all, and two places
+  // deciding how many parcels there are is how one parcel travels unlabelled.
+  const table = tableShipping({
     country,
     postcode: resolved.address.postcode,
     text: resolved.address.formatted,
@@ -64,7 +68,23 @@ export async function priceOrder({ items, country, address: addressInput, sessio
     goodsWeightG,
     declaredRural: declaredRural === true,
   });
-  if (shipping.error) return { error: shipping.error, status: 400 };
+  // A refusal here is a validation error — no postcode, Chatham Islands,
+  // somewhere we do not deliver — and no live rate changes that.
+  if (table.error) return { error: table.error, status: 400 };
+
+  // Then ask the carrier what it would actually charge. Returns null on a
+  // missing key, a slow or refused call, or no carrier that will COLLECT from
+  // Te Puke — and in every one of those cases the table's price stands and the
+  // customer never knows. A sale lost to somebody else's outage is worse than
+  // a dollar of freight.
+  const live = await liveShipping({
+    order: { address: resolved.address },
+    parcel: table,
+  });
+
+  // When the carrier answered, its rural flag is better than ours: ours is a
+  // guess from an RD pattern or a tick-box the customer filled in themselves.
+  const shipping = live || table;
   return { lines: cart.lines, address: resolved.address, shipping };
 }
 
