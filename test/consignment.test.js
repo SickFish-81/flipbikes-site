@@ -266,7 +266,7 @@ test("dimensions are sent in CENTIMETRES, not metres", () => {
   const pkgs = packagesFor(parcelFor(anOrder()));
   assert.equal(pkgs[0].Length, 37);
   assert.equal(pkgs[0].Width, 20);
-  assert.equal(pkgs[0].Height, 18.5);
+  assert.equal(pkgs[0].Height, 19);
   // A carton goes as a Box, under the one stock size the account actually has.
   assert.equal(pkgs[0].Name, "custom");
   assert.equal(pkgs[0].Type, "Box");

@@ -264,3 +264,17 @@ test("every package goes under a stock size the account actually has", async () 
     assert.ok(p.Length > 0 && p.Width > 0 && p.Height > 0 && p.Kg > 0);
   }
 });
+
+// Dimensions must be whole centimetres.
+//
+// Their Rate Package Model types length/width/height as integer, and GSS is an
+// ASP.NET app: a decimal against an int property fails model binding, and a
+// package that does not bind cannot be rated. We sent Height 18.5 for weeks.
+test("every dimension sent is a whole number", async () => {
+  await price([{ sku: "flip-standard", qty: 3 }]);
+  for (const p of sent[0].Packages) {
+    for (const k of ["Length", "Width", "Height"]) {
+      assert.equal(Number.isInteger(p[k]), true, `${k} must be an integer, got ${p[k]}`);
+    }
+  }
+});

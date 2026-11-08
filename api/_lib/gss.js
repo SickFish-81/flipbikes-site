@@ -121,7 +121,16 @@ export function destinationFrom(order) {
 // quoteShipping, which already knows how many cartons an order takes and what
 // they weigh — this file does not re-derive it, because two places deciding
 // how many parcels there are is how one parcel travels unlabelled.
-export const CARTON_CM = { Length: 37, Width: 20, Height: 18.5 };
+// WHOLE CENTIMETRES ONLY. Their Rate Package Model types length, width and
+// height as INTEGER. GSS runs on ASP.NET, where a decimal posted to an int
+// property fails model binding — and a package that fails to bind is not a
+// package, which is a plausible way to get Available, Hidden and Rejected all
+// empty with no reason given. 18.5 was the only fractional dimension we sent.
+//
+// Rounded UP, never down: a carton declared slightly larger than it is costs a
+// few cents and is the safe direction to be wrong in, the same principle the
+// freight markup is built on. 18.5 -> 19.
+export const CARTON_CM = { Length: 37, Width: 20, Height: 19 };
 export const SATCHEL_CM = { Length: 35, Width: 25, Height: 5 };
 
 export function packagesFor(shipping) {
@@ -130,7 +139,13 @@ export function packagesFor(shipping) {
   // Split the weight evenly. The carrier bills on the total and re-weighs
   // anything that matters, so an even split is honest rather than precise.
   const kg = Math.round((totalKg / count) * 100) / 100;
-  const dims = shipping?.bag ? SATCHEL_CM : CARTON_CM;
+  const raw = shipping?.bag ? SATCHEL_CM : CARTON_CM;
+  // Belt and braces: whatever the constants say, what leaves here is integral.
+  const dims = {
+    Length: Math.ceil(raw.Length),
+    Width: Math.ceil(raw.Width),
+    Height: Math.ceil(raw.Height),
+  };
   return Array.from({ length: count }, () => ({
     // Not "Carton"/"Satchel": those are not stock sizes on this account, and a
     // name GSS cannot resolve appears to cost the whole quote silently.
