@@ -127,6 +127,15 @@ export function packagesFor(shipping) {
 // `Rejected` is kept and handed back rather than dropped: when no carrier
 // quotes, the reason they each gave is the only way to tell a bad address
 // from a lane nobody serves.
+//
+// `Hidden` is kept for the same reason, and it was MISSED the first time.
+// GSS returns three groups, not two, and their docs describe Hidden as rates
+// that are available but "filtered out due to user preference, based on cost
+// centre, or destination courier preference". Dropping it meant an empty
+// `Available` looked identical whether no carrier could serve the lane or
+// every carrier had been filtered out by an account setting — and on 8 Nov
+// that cost a wrong diagnosis: "no carriers on the account" was read off a
+// parser that discarded the group which would have said otherwise.
 export async function rates({ destination, packages, signatureRequired = true, reference = "" }) {
   const body = {
     DeliveryReference: String(reference).slice(0, 60),
@@ -136,7 +145,11 @@ export async function rates({ destination, packages, signatureRequired = true, r
     IsSaturdayDelivery: false,
   };
   const out = await call("api/rates", { method: "POST", body });
-  return { available: out?.Available || [], rejected: out?.Rejected || [] };
+  return {
+    available: out?.Available || [],
+    rejected: out?.Rejected || [],
+    hidden: out?.Hidden || [],
+  };
 }
 
 // Book it. Returns { consignmentId, connote, trackingUrl, carrier, charge }.

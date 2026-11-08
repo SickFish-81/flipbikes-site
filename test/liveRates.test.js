@@ -25,8 +25,8 @@ let sent = [];   // the bodies we posted to the carrier
 let reply;      // what the fake carrier answers
 let fail;       // make the call blow up
 
-function quoted(available, rejected = []) {
-  return { Available: available, Rejected: rejected };
+function quoted(available, rejected = [], hidden = []) {
+  return { Available: available, Rejected: rejected, Hidden: hidden };
 }
 
 beforeEach(() => {
@@ -180,4 +180,69 @@ test("an accessories-only order is quoted as one satchel", async () => {
   await price([{ sku: "d-rings", qty: 2 }]);
   assert.equal(sent[0].Packages.length, 1);
   assert.equal(sent[0].Packages[0].Name, "Satchel");
+});
+
+// ---------------------------------------------------------------------------
+// The Hidden group.
+//
+// GSS returns three groups and we read two. Their docs call Hidden rates that
+// are available but "filtered out due to user preference, based on cost
+// centre, or destination courier preference" — an ACCOUNT SETTING, not a
+// carrier declining the job.
+//
+// On 8 Nov the live account returned nothing in Available and nothing in
+// Rejected. The log said "saw: none", which was read as "this account has no
+// carriers" and acted on. Hidden was never looked at, because the parser threw
+// it away. These two tests exist so that the next empty result says which of
+// the two it is, instead of leaving it to be guessed at again.
+
+test("carriers hidden by an account setting still mean no live price", async () => {
+  reply = quoted([], [], [
+    { QuoteId: "h1", CarrierName: "NZ Post Domestic", Charge: 13.65 },
+  ]);
+  const out = await liveShipping({
+    order: { address: { country: "NZ", postcode: "4412" } },
+    parcel: { cartons: 1, weightG: 9000, region: "north" },
+  });
+  // Hidden is NOT usable — it is a quote the account has been told not to use.
+  // Falling back to the table is correct; silently charging it would not be.
+  assert.equal(out, null);
+});
+
+test("the log names the hidden carriers, so an empty account cannot be confused with a filtered one", async () => {
+  const seen = [];
+  const realError = console.error;
+  console.error = (...a) => seen.push(a.join(" "));
+  try {
+    reply = quoted([], [], [
+      { QuoteId: "h1", CarrierName: "NZ Post Domestic", Charge: 13.65 },
+      { QuoteId: "h2", CarrierName: "CourierPost", Charge: 14.10 },
+    ]);
+    await liveShipping({
+      order: { address: { country: "NZ", postcode: "4412" } },
+      parcel: { cartons: 1, weightG: 9000, region: "north" },
+    });
+  } finally {
+    console.error = realError;
+  }
+
+  const line = seen.join("\n");
+  assert.match(line, /available: none/);
+  assert.match(line, /hidden: NZ Post Domestic, CourierPost/);
+});
+
+test("a genuinely empty account says so, and says hidden is empty too", async () => {
+  const seen = [];
+  const realError = console.error;
+  console.error = (...a) => seen.push(a.join(" "));
+  try {
+    reply = quoted([], [], []);
+    await liveShipping({
+      order: { address: { country: "NZ", postcode: "4412" } },
+      parcel: { cartons: 1, weightG: 9000, region: "north" },
+    });
+  } finally {
+    console.error = realError;
+  }
+  assert.match(seen.join("\n"), /available: none; hidden: none/);
 });

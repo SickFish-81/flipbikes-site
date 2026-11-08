@@ -65,7 +65,7 @@ export async function liveShipping({ order, parcel, signatureRequired = true }) 
   try {
     const destination = destinationFrom(order);
     const packages = packagesFor(parcel);
-    const { available, rejected } = await rates({
+    const { available, rejected, hidden } = await rates({
       destination, packages, signatureRequired,
       reference: "quote",
     });
@@ -81,7 +81,14 @@ export async function liveShipping({ order, parcel, signatureRequired = true }) 
       // and an account problem unless the reasons are kept.
       const why = (rejected || []).map((r) => `${r.Carrier || "?"}: ${r.Reason || "?"}`).join("; ");
       const seen = available.map((q) => q.CarrierName).join(", ") || "none";
-      console.error(`live rates: nothing usable (saw: ${seen})${why ? " — rejected: " + why : ""}`);
+      // Hidden is named explicitly, because "saw: none" on its own cannot tell
+      // an empty account from carriers filtered out by a cost centre — and
+      // once it did not, for a day.
+      const hid = (hidden || []).map((q) => q.CarrierName || "?").join(", ") || "none";
+      console.error(
+        `live rates: nothing usable (available: ${seen}; hidden: ${hid})` +
+        (why ? ` — rejected: ${why}` : "")
+      );
       return null;
     }
 
