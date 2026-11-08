@@ -179,7 +179,8 @@ test("the carrier is asked about the parcel the TABLE worked out", async () => {
 test("an accessories-only order is quoted as one satchel", async () => {
   await price([{ sku: "d-rings", qty: 2 }]);
   assert.equal(sent[0].Packages.length, 1);
-  assert.equal(sent[0].Packages[0].Name, "Satchel");
+  assert.equal(sent[0].Packages[0].Name, "custom");
+  assert.equal(sent[0].Packages[0].Type, "Satchel");
 });
 
 // ---------------------------------------------------------------------------
@@ -245,4 +246,21 @@ test("a genuinely empty account says so, and says hidden is empty too", async ()
     console.error = realError;
   }
   assert.match(seen.join("\n"), /available: none; hidden: none/);
+});
+
+// The stock size is not a label we get to choose.
+//
+// GSS resolves `Name` against the account's Administration > Stock Sizes, and
+// their docs say to send "custom" when none matches. This account has only
+// "-- Custom --" and six GSS satchel codes. We sent "Carton" for weeks; rates
+// came back with Available, Hidden and Rejected all empty, which is the least
+// informative failure the API has. This test exists so a friendlier-looking
+// name never gets put back.
+test("every package goes under a stock size the account actually has", async () => {
+  await price([{ sku: "flip-standard", qty: 3 }]);
+  for (const p of sent[0].Packages) {
+    assert.equal(p.Name, "custom", "Name is a stock size, not a description");
+    assert.ok(["Box", "Satchel"].includes(p.Type));
+    assert.ok(p.Length > 0 && p.Width > 0 && p.Height > 0 && p.Kg > 0);
+  }
 });

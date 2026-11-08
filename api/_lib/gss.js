@@ -94,9 +94,28 @@ export function destinationFrom(order) {
 
 // ----------------------------------------------------------------- packages
 //
-// DIMENSIONS ARE CENTIMETRES. The API stores them as metres and names the
-// fields LengthCm / WidthCm / HeightCm, which reads like a bug and is not:
-// send 37 for a 37cm carton and it records 0.37. Confirmed by Ben, 22 Oct.
+// DIMENSIONS ARE CENTIMETRES, in fields named Length / Width / Height.
+//
+// An earlier note here claimed the request fields were LengthCm / WidthCm /
+// HeightCm. They are not. Those names belong to GSS's SHIPMENT PACKAGE MODEL,
+// which is a RESPONSE model — it also carries PickedAt, DeliveredAt and
+// Charge_LineTotal. The request model (Rate Package Model) uses Length, Width,
+// Height and Kg, which is what every request example in their docs sends.
+// Checked against the docs on 9 Nov after the old note nearly caused a working
+// call to be "fixed" into a broken one.
+//
+// NAME MUST BE A STOCK SIZE THE ACCOUNT ACTUALLY HAS, OR "custom".
+//
+// Their docs are explicit: name is "configured in Ship for your account under
+// Administration > Stock Sizes. If none available, use 'custom'". This account
+// has exactly seven: -- Custom -- and six GSS satchel codes. It has no
+// "Carton" and no "Satchel", which is what this function used to send, and an
+// unrecognised stock size is the leading suspect for rates coming back with
+// Available, Hidden and Rejected all empty — no error, no reason, nothing.
+//
+// So: "custom", plus the real dimensions. The human-readable word moves to
+// Type, which is a documented field (Box / Carton / Satchel / Pallet, max 10
+// characters) and is what the docs' own examples send alongside it.
 //
 // Sizes are Craig's real boxes (flip-freight-and-boxes). Weight comes from
 // quoteShipping, which already knows how many cartons an order takes and what
@@ -113,7 +132,10 @@ export function packagesFor(shipping) {
   const kg = Math.round((totalKg / count) * 100) / 100;
   const dims = shipping?.bag ? SATCHEL_CM : CARTON_CM;
   return Array.from({ length: count }, () => ({
-    Name: shipping?.bag ? "Satchel" : "Carton",
+    // Not "Carton"/"Satchel": those are not stock sizes on this account, and a
+    // name GSS cannot resolve appears to cost the whole quote silently.
+    Name: "custom",
+    Type: shipping?.bag ? "Satchel" : "Box",
     ...dims,
     Kg: kg,
     HasDG: false,

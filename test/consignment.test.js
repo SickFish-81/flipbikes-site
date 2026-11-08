@@ -267,6 +267,9 @@ test("dimensions are sent in CENTIMETRES, not metres", () => {
   assert.equal(pkgs[0].Length, 37);
   assert.equal(pkgs[0].Width, 20);
   assert.equal(pkgs[0].Height, 18.5);
+  // A carton goes as a Box, under the one stock size the account actually has.
+  assert.equal(pkgs[0].Name, "custom");
+  assert.equal(pkgs[0].Type, "Box");
 });
 
 test("an accessories-only order goes as one satchel", () => {
@@ -274,7 +277,10 @@ test("an accessories-only order goes as one satchel", () => {
   assert.equal(parcel.bag, true);
   const pkgs = packagesFor(parcel);
   assert.equal(pkgs.length, 1);
-  assert.equal(pkgs[0].Name, "Satchel");
+  // Name is the STOCK SIZE and must be one the account has; "Satchel" is not
+  // one of them. The satchel-ness lives in Type now. See gss.js.
+  assert.equal(pkgs[0].Name, "custom");
+  assert.equal(pkgs[0].Type, "Satchel");
 });
 
 test("the delivery note reaches the carrier, because it is what a hand-typed label loses", () => {
