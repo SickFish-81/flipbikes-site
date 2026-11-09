@@ -192,6 +192,38 @@ async function logQuietly(entry) {
   }
 }
 
+// Everything the order row is, derived from the Stripe session, in one place
+// so it can be tested without a webhook, a signature or a database.
+export function orderRowFrom(s) {
+    const m = s.metadata || {};
+    const shipping = s.collected_information?.shipping_details || s.shipping_details || {};
+    const details = s.customer_details || {};
+    const order = {
+      session_id: s.id,
+      payment_intent: s.payment_intent,
+      name: m.name || shipping.name || details.name || null,
+      email: details.email || s.customer_email || null,
+      phone: m.phone || details.phone || null,
+      country: m.country || shipping.address?.country || null,
+      address: m.addr
+        ? { formatted: m.addr, postcode: m.postcode || null, rural: m.rural === "yes", ruralWhy: m.rural_why || null, note: m.note || null, typed: m.addr_source === "manual" }
+        : shipping.address || details.address || null,
+      items: itemsFromMetadata(m.items),
+      amount_total: s.amount_total ?? null,
+      shipping_amount: s.total_details?.amount_shipping ?? null,
+      // Carrier or table. Defaults to 'table' rather than null: an order placed
+      // through a checkout that sets this and arrives without it was priced by
+      // the fallback, and recording that as "unknown" would hide the one case
+      // the column exists to show.
+      shipping_source: m.ship_src === "carrier" ? "carrier" : "table",
+      shipping_carrier: m.ship_carrier || null,
+      shipping_quoted_cents: Number.isFinite(Number(m.ship_exgst)) && m.ship_exgst !== undefined
+        ? Number(m.ship_exgst)
+        : null,
+    };
+  return order;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).send("Method not allowed");
 
@@ -218,23 +250,7 @@ export default async function handler(req, res) {
   // Name, phone and address were collected on OUR cart page and ride along in
   // metadata. Older sessions (or ones started elsewhere) fall back to whatever
   // Stripe collected itself.
-  const m = s.metadata || {};
-  const shipping = s.collected_information?.shipping_details || s.shipping_details || {};
-  const details = s.customer_details || {};
-  const order = {
-    session_id: s.id,
-    payment_intent: s.payment_intent,
-    name: m.name || shipping.name || details.name || null,
-    email: details.email || s.customer_email || null,
-    phone: m.phone || details.phone || null,
-    country: m.country || shipping.address?.country || null,
-    address: m.addr
-      ? { formatted: m.addr, postcode: m.postcode || null, rural: m.rural === "yes", ruralWhy: m.rural_why || null, note: m.note || null, typed: m.addr_source === "manual" }
-      : shipping.address || details.address || null,
-    items: itemsFromMetadata(m.items),
-    amount_total: s.amount_total ?? null,
-    shipping_amount: s.total_details?.amount_shipping ?? null,
-  };
+  const order = orderRowFrom(s);
 
   try {
     // Claim the order. Without a database we can't dedupe, so a retried

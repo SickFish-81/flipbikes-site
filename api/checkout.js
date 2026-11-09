@@ -111,6 +111,16 @@ export default async function handler(req, res) {
   // said so. Craig needs this to know whether to double-check before booking.
   if (shipping.ruralReason) p.set("metadata[rural_why]", shipping.ruralReason);
   p.set("metadata[addr_source]", address.source);
+  // WHO priced the freight. The fallback to the table is silent by design —
+  // a carrier outage must not cost a sale — and silence is exactly what makes
+  // it impossible to say afterwards which orders were affected. So it rides
+  // through Stripe on the session and is stored on the order.
+  p.set("metadata[ship_src]", shipping.source || "table");
+  if (shipping.carrier) p.set("metadata[ship_carrier]", String(shipping.carrier).slice(0, 60));
+  // The carrier's raw number, ex GST and before our markup. Kept so the
+  // reports page can hold three figures against each other: quoted, charged,
+  // and what the docket actually said.
+  if (typeof shipping.exGstCents === "number") p.set("metadata[ship_exgst]", String(shipping.exGstCents));
   if (note) p.set("metadata[note]", note);
 
   try {

@@ -10,7 +10,7 @@ import checkout from "../api/checkout.js";
 import shop from "../api/shop.js";
 import quote from "../api/quote.js";
 import suggest from "../api/address-suggest.js";
-import webhook, { verifySignature, itemsFromMetadata } from "../api/stripe-webhook.js";
+import webhook, { verifySignature, itemsFromMetadata, orderRowFrom } from "../api/stripe-webhook.js";
 import { gstFromInclusive } from "../api/_lib/invoice.js";
 import { RATES, CHOCKS_PER_CARTON, CARTON_WEIGHT_G, TICKET_WEIGHT_G } from "../api/_lib/shipping.js";
 import { PRODUCTS } from "../api/_lib/catalog.js";
@@ -158,6 +158,7 @@ const order = (over = {}) => ({
   items: [{ sku: "flip-g3", qty: 1 }], country: "NZ", name: "Pat Rider", email: "pat@example.com",
   phone: "021 123 456", address: manual(), ...over,
 });
+const orderRowFrom_ = (metadata) => orderRowFrom({ id: "cs_test_1", metadata, amount_total: 1000, total_details: { amount_shipping: 150 } });
 const shipAmount = () => stripeBody().get("shipping_options[0][shipping_rate_data][fixed_amount][amount]");
 
 // ---- /api/checkout
@@ -943,4 +944,43 @@ test("email_log: a logging failure never costs the customer their email", async 
 
   assert.equal(r.code, 200, "the order still completes");
   assert.equal(emails().length, 2, "and both emails still went");
+});
+
+// ---------------------------------------------------------------------------
+// WHO priced the freight has to be recorded, because the fallback is silent.
+//
+// liveShipping() returns null on a missing key, a slow carrier, a refused call
+// or an address no carrier will quote, and the table answers instead. The
+// customer sees a sensible price either way — which is the whole point, and
+// also the reason an outage can run for days without anyone noticing. These
+// tests exist so the order itself says which one answered.
+
+test("checkout: an order priced by the table says so", async () => {
+  // No GSS key configured, so liveShipping returns null and the table answers.
+  delete process.env.GSS_ACCESS_KEY;
+  delete process.env.GSS_SITE_ID;
+  await post(checkout, order());
+  const b = stripeBody();
+  assert.equal(b.get("metadata[ship_src]"), "table");
+  assert.equal(b.get("metadata[ship_carrier]"), null);
+  assert.equal(b.get("metadata[ship_exgst]"), null);
+});
+
+test("the webhook records the source on the order, and treats a missing one as the table", () => {
+  // A session that came through a checkout which sets it.
+  const live = orderRowFrom_({ ship_src: "carrier", ship_carrier: "NZ Post Domestic", ship_exgst: "1205" });
+  assert.equal(live.shipping_source, "carrier");
+  assert.equal(live.shipping_carrier, "NZ Post Domestic");
+  assert.equal(live.shipping_quoted_cents, 1205);
+
+  // A session with nothing: the fallback priced it. NOT null — recording this
+  // as "unknown" would hide the exact case the column exists to show.
+  const fell = orderRowFrom_({});
+  assert.equal(fell.shipping_source, "table");
+  assert.equal(fell.shipping_carrier, null);
+  assert.equal(fell.shipping_quoted_cents, null);
+
+  // Junk is not a carrier quote.
+  assert.equal(orderRowFrom_({ ship_src: "nonsense" }).shipping_source, "table");
+  assert.equal(orderRowFrom_({ ship_src: "carrier", ship_exgst: "abc" }).shipping_quoted_cents, null);
 });
