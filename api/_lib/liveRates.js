@@ -65,7 +65,7 @@ export async function liveShipping({ order, parcel, signatureRequired = true }) 
   try {
     const destination = destinationFrom(order);
     const packages = packagesFor(parcel);
-    const { available, rejected, hidden } = await rates({
+    const { available, rejected, suppressed, validationErrors, keys } = await rates({
       destination, packages, signatureRequired,
       reference: "quote",
     });
@@ -81,13 +81,17 @@ export async function liveShipping({ order, parcel, signatureRequired = true }) 
       // and an account problem unless the reasons are kept.
       const why = (rejected || []).map((r) => `${r.Carrier || "?"}: ${r.Reason || "?"}`).join("; ");
       const seen = available.map((q) => q.CarrierName).join(", ") || "none";
-      // Hidden is named explicitly, because "saw: none" on its own cannot tell
-      // an empty account from carriers filtered out by a cost centre — and
-      // once it did not, for a day.
-      const hid = (hidden || []).map((q) => q.CarrierName || "?").join(", ") || "none";
+      // Everything the response contained, named. A quote that comes back with
+      // nothing usable has exactly one useful property — what it DID contain —
+      // and guessing at that has cost three wrong diagnoses already.
+      const sup = (suppressed || []).map((q) => q.CarrierName || "?").join(", ") || "none";
+      const ve = Object.keys(validationErrors || {}).length
+        ? ` — validation: ${JSON.stringify(validationErrors).slice(0, 200)}`
+        : "";
       console.error(
-        `live rates: nothing usable (available: ${seen}; hidden: ${hid})` +
-        (why ? ` — rejected: ${why}` : "")
+        `live rates: nothing usable (available: ${seen}; suppressed: ${sup}` +
+        `; keys: ${(keys || []).join("/") || "none"})` +
+        (why ? ` — rejected: ${why}` : "") + ve
       );
       return null;
     }

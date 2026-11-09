@@ -165,14 +165,22 @@ export function packagesFor(shipping) {
 // quotes, the reason they each gave is the only way to tell a bad address
 // from a lane nobody serves.
 //
-// `Hidden` is kept for the same reason, and it was MISSED the first time.
-// GSS returns three groups, not two, and their docs describe Hidden as rates
-// that are available but "filtered out due to user preference, based on cost
-// centre, or destination courier preference". Dropping it meant an empty
-// `Available` looked identical whether no carrier could serve the lane or
-// every carrier had been filtered out by an account setting — and on 8 Nov
-// that cost a wrong diagnosis: "no carriers on the account" was read off a
-// parser that discarded the group which would have said otherwise.
+// THE THIRD GROUP IS CALLED `Suppressed`, NOT `Hidden`.
+//
+// Their prose documentation says "Hidden" — rates that are available but
+// "filtered out due to user preference, based on cost centre, or destination
+// courier preference". A real response, pasted by GSS support on 9 Nov, has no
+// Hidden key at all. It has: Available, Suppressed, Rejected, ValidationErrors.
+//
+// This mattered. Code added on 8 Nov read `out.Hidden`, which is always
+// undefined, and logged "hidden: none" on every call. That line was then used
+// to rule OUT cost-centre filtering as the cause of empty quotes — a
+// conclusion drawn from a field that does not exist, reported with confidence,
+// twice. Reading the documentation instead of a response is how that happened.
+//
+// So all four keys are now carried, and anything unrecognised is reported
+// rather than discarded, because this API has twice turned out to have a
+// shape nobody here had actually looked at.
 export async function rates({ destination, packages, signatureRequired = true, reference = "" }) {
   const body = {
     DeliveryReference: String(reference).slice(0, 60),
@@ -185,7 +193,11 @@ export async function rates({ destination, packages, signatureRequired = true, r
   return {
     available: out?.Available || [],
     rejected: out?.Rejected || [],
-    hidden: out?.Hidden || [],
+    suppressed: out?.Suppressed || [],
+    validationErrors: out?.ValidationErrors || {},
+    // Every top-level key the response actually had, so the next surprise is
+    // visible the first time instead of after three wrong diagnoses.
+    keys: out && typeof out === "object" ? Object.keys(out) : [],
   };
 }
 

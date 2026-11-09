@@ -25,8 +25,8 @@ let sent = [];   // the bodies we posted to the carrier
 let reply;      // what the fake carrier answers
 let fail;       // make the call blow up
 
-function quoted(available, rejected = [], hidden = []) {
-  return { Available: available, Rejected: rejected, Hidden: hidden };
+function quoted(available, rejected = [], suppressed = []) {
+  return { Available: available, Rejected: rejected, Suppressed: suppressed, ValidationErrors: {} };
 }
 
 beforeEach(() => {
@@ -197,7 +197,7 @@ test("an accessories-only order is quoted as one satchel", async () => {
 // it away. These two tests exist so that the next empty result says which of
 // the two it is, instead of leaving it to be guessed at again.
 
-test("carriers hidden by an account setting still mean no live price", async () => {
+test("carriers suppressed by an account setting still mean no live price", async () => {
   reply = quoted([], [], [
     { QuoteId: "h1", CarrierName: "NZ Post Domestic", Charge: 13.65 },
   ]);
@@ -210,7 +210,7 @@ test("carriers hidden by an account setting still mean no live price", async () 
   assert.equal(out, null);
 });
 
-test("the log names the hidden carriers, so an empty account cannot be confused with a filtered one", async () => {
+test("the log names the suppressed carriers, so an empty account cannot be confused with a filtered one", async () => {
   const seen = [];
   const realError = console.error;
   console.error = (...a) => seen.push(a.join(" "));
@@ -229,10 +229,10 @@ test("the log names the hidden carriers, so an empty account cannot be confused 
 
   const line = seen.join("\n");
   assert.match(line, /available: none/);
-  assert.match(line, /hidden: NZ Post Domestic, CourierPost/);
+  assert.match(line, /suppressed: NZ Post Domestic, CourierPost/);
 });
 
-test("a genuinely empty account says so, and says hidden is empty too", async () => {
+test("a genuinely empty account says so, and says suppressed is empty too", async () => {
   const seen = [];
   const realError = console.error;
   console.error = (...a) => seen.push(a.join(" "));
@@ -245,7 +245,7 @@ test("a genuinely empty account says so, and says hidden is empty too", async ()
   } finally {
     console.error = realError;
   }
-  assert.match(seen.join("\n"), /available: none; hidden: none/);
+  assert.match(seen.join("\n"), /available: none; suppressed: none/);
 });
 
 // The stock size is not a label we get to choose.
