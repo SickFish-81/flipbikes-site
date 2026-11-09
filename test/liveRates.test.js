@@ -278,3 +278,21 @@ test("every dimension sent is a whole number", async () => {
     }
   }
 });
+
+// A hand-typed address with no suburb must still rate.
+//
+// destinationFrom used to fall back to parts[1] of the formatted string before
+// the city. For "123 No 1 Road, RD 2, Te Puke, 3182" that is "RD 2" — an RD
+// number, not a suburb — and GSS answers it with Available, Suppressed and
+// Rejected all empty. Four days were spent diagnosing that silence.
+test("an address with no suburb sends the city, never the RD number", async () => {
+  await priceOrder({
+    items: [{ sku: "flip-standard", qty: 1 }],
+    country: "NZ",
+    address: { manual: { line1: "123 No 1 Road, RD 2", suburb: "", city: "Te Puke", postcode: "3182" } },
+  });
+  const sub = sent[0].Destination.Address.Suburb;
+  assert.equal(sub, "Te Puke");
+  assert.notEqual(sub, "RD 2");
+  assert.ok(sub.length > 0, "an empty suburb is refused outright by GSS");
+});

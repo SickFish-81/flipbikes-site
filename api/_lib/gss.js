@@ -71,7 +71,18 @@ export function destinationFrom(order) {
   const a = order?.address || {};
   const parts = String(a.formatted || "").split(",").map((s) => s.trim()).filter(Boolean);
   const street = a.line1 || parts[0] || "";
-  const suburb = a.suburb || parts[1] || a.city || parts[2] || "";
+  // CITY BEFORE parts[1]. On a hand-typed address `suburb` is often empty and
+  // parts[1] is simply the second comma-separated chunk of the formatted
+  // string — for "123 No 1 Road, RD 2, Te Puke, 3182" that is "RD 2", which is
+  // a rural delivery number, not a suburb. GSS answers such a request with
+  // Available, Suppressed and Rejected ALL EMPTY: no error, no reason, just
+  // silence, and the shop quietly falls back to the table.
+  //
+  // That cost four days. The empty-suburb case was the canary used to decide
+  // live rates "were not working" — they were, for every address that had a
+  // real suburb. The city is always present (resolveAddress requires it) and
+  // is a valid suburb for rating purposes, so it goes first.
+  const suburb = a.suburb || a.city || parts[1] || parts[2] || "";
   const city = a.city || parts[2] || suburb;
 
   return {
