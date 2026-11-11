@@ -366,3 +366,16 @@ test("invoice PDF: your own downloads; someone else's is 'no such invoice'", asy
   const signedOut = await call({ method: "GET", query: { invoice: "1009" }, origin: null });
   assert.equal(signedOut.code, 401);
 });
+
+test("sessions don't expire: a two-year-old sign-in still works, and each visit renews the cookie", async () => {
+  const twoYearsAgo = Date.now() - 2 * 365 * 86400 * 1000;
+  const old = signSession(A, 1, twoYearsAgo);
+  const r = await call({ cookie: old, body: { action: "me" } });
+  assert.equal(r.code, 200);
+  const renewed = r.headers["Set-Cookie"];
+  assert.match(renewed, /Max-Age=34560000/, "400 days, the most a browser keeps");
+  assert.ok(cookieOf(r) && cookieOf(r) !== old, "a fresh cookie was issued");
+  // ...but turning access off still ends it at once.
+  db.dealers[A].portal_access = false;
+  assert.equal((await call({ cookie: old, body: { action: "me" } })).code, 401);
+});

@@ -97,6 +97,9 @@ export default async function handler(req, res) {
       res.setHeader("Set-Cookie", clearCookie());
       return res.status(401).json({ error: "Please sign in.", signedOut: true });
     }
+    // Rolling renewal: every visit pushes the cookie's expiry out again, so a
+    // dealer who keeps ordering stays signed in indefinitely.
+    res.setHeader("Set-Cookie", sessionCookie(signSession(dealer.id, dealer.session_version)));
     if (b.action === "me") return await me(dealer, res);
     if (b.action === "quote") return await quote(b, res);
     if (b.action === "order") return await order(dealer, b, res);

@@ -18,7 +18,13 @@
 import { createHmac, randomInt, timingSafeEqual } from "node:crypto";
 
 export const SESSION_COOKIE = "flip_dealer";
-export const SESSION_DAYS = 30;
+// Dealers stay signed in for good (Ben, Nov 2026: they are known suppliers,
+// and a login that lapses is just friction). A session has no expiry of its
+// own; it ends only when Craig unticks "Can order online", presses "Sign out
+// everywhere", or the dealer signs out. Browsers won't keep a cookie longer
+// than 400 days, so /api/dealer re-issues it on every visit: anyone who
+// orders at least once a year never sees the sign-in page again.
+export const SESSION_DAYS = 400;
 export const CODE_MINUTES = 10;
 export const CODE_MAX_ATTEMPTS = 5;
 // At most this many codes per dealer per 15 minutes, so the form can't be
@@ -54,6 +60,7 @@ export function codeMatches(dealerId, code, storedHash) {
 // <payload>.<signature>, payload = {d: dealer id, v: session_version, t: issued}
 // Checking the signature proves we issued it; the caller still has to check
 // the dealer exists, still has portal access, and is on the same version.
+// `t` is kept for the record but no longer limits how long a session lasts.
 
 export function signSession(dealerId, version, nowMs = Date.now()) {
   const payload = b64url(JSON.stringify({ d: dealerId, v: version, t: Math.floor(nowMs / 1000) }));
@@ -70,7 +77,6 @@ export function readSession(token, nowMs = Date.now()) {
   let p;
   try { p = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); } catch { return null; }
   if (!p || typeof p.d !== "string" || !Number.isInteger(p.v) || !Number.isInteger(p.t)) return null;
-  if (nowMs / 1000 - p.t > SESSION_DAYS * 86400) return null;
   return { dealerId: p.d, version: p.v };
 }
 
