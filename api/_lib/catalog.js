@@ -62,7 +62,12 @@ export const bySku = new Map(PRODUCTS.map((p) => [p.sku, p]));
 
 // Turn whatever the browser sent into a clean list of { product, qty }, or
 // an { error } string. Merges duplicate lines and rejects anything unknown.
-export function parseCart(items) {
+// `maxQty` exists for trade orders only. The public cart keeps its cap of
+// MAX_QTY_PER_LINE — past that a buyer is told to get in touch, which is
+// exactly how a trade order starts — but a trade order Craig enters by hand is
+// that conversation already had, and refusing to price 30 chocks for a dealer
+// would defeat it. The database function caps trade lines at 1000.
+export function parseCart(items, { maxQty = MAX_QTY_PER_LINE } = {}) {
   if (!Array.isArray(items) || items.length === 0) return { error: "Your cart is empty." };
   if (items.length > 20) return { error: "Too many items in the cart." };
 
@@ -77,8 +82,8 @@ export function parseCart(items) {
 
   const lines = [];
   for (const [sku, qty] of merged) {
-    if (qty > MAX_QTY_PER_LINE) {
-      return { error: `For more than ${MAX_QTY_PER_LINE} of one item, please contact us.` };
+    if (qty > maxQty) {
+      return { error: `For more than ${maxQty} of one item, please contact us.` };
     }
     lines.push({ product: bySku.get(sku), qty });
   }

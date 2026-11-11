@@ -196,3 +196,115 @@ export async function orderForConsignment(sessionId) {
   const rows = await call(`flip_orders?session_id=eq.${encodeURIComponent(sessionId)}&select=${cols}`);
   return rows[0] || null;
 }
+
+// ------------------------------------------------------------- trade orders
+
+// Is whoever holds this token an OWNER of the Betterservice app?
+//
+// The token is the caller's own Supabase session, sent from the dashboard. It
+// is checked by asking the database — as that user, not as the service role —
+// so the answer comes from the same is_owner() that guards every owner policy
+// in the app. There is no second copy of "who is an owner" to drift.
+//
+// The service key goes in `apikey` only, which the gateway needs to accept the
+// request at all; the Authorization header is the user's, and that is what the
+// database runs the query as. Anything other than a plain `true` is a no:
+// a bad token, an expired one, a staff member who is not an owner, an outage.
+export async function callerIsOwner(token) {
+  if (!dbConfigured() || !token) return false;
+  try {
+    const r = await fetch(`${url()}/rest/v1/rpc/is_owner`, {
+      method: "POST",
+      headers: { apikey: key(), Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (!r.ok) return false;
+    return (await r.json()) === true;
+  } catch {
+    return false;
+  }
+}
+
+// One trade order, with everything its invoice needs. Read through the
+// service role: callerIsOwner() has already decided who may ask.
+export async function tradeOrderByInvoice(invoiceNumber) {
+  const cols = "session_id,invoice_number,created_at,channel,name,phone,country,address,items," +
+    "amount_total,shipping_amount,amount_ex_gst,gst_amount,shipping_ex_gst," +
+    "bill_to,due_date,paid_at,emailed,customer_ref,placed_via,dealer_id";
+  const rows = await call(`flip_orders?invoice_number=eq.${Number(invoiceNumber)}&select=${cols}`);
+  return rows[0] || null;
+}
+
+// ------------------------------------------------------------ dealer portal
+//
+// All through the service key: the dealer is not a database user (see
+// dealerAuth.js). /api/dealer decides who is asking before any of these run,
+// and every query below is pinned to that one dealer's id.
+
+const DEALER_COLS = "id,business,contact,email,phone,address,tier_id,portal_access,session_version";
+
+export async function dealerByEmail(email) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return null;
+  const rows = await call(`flip_dealers?email=eq.${encodeURIComponent(e)}&select=${DEALER_COLS}`);
+  return rows[0] || null;
+}
+
+export async function dealerById(id) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(id || ""))) return null;
+  const rows = await call(`flip_dealers?id=eq.${id}&select=${DEALER_COLS}`);
+  return rows[0] || null;
+}
+
+export async function codesSince(dealerId, sinceIso) {
+  const rows = await call(`flip_dealer_codes?dealer_id=eq.${dealerId}&created_at=gte.${encodeURIComponent(sinceIso)}&select=id`);
+  return rows.length;
+}
+
+export async function insertCode(dealerId, codeHash, expiresIso) {
+  await call("flip_dealer_codes", {
+    method: "POST",
+    body: { dealer_id: dealerId, code_hash: codeHash, expires_at: expiresIso },
+    prefer: "return=minimal",
+  });
+}
+
+// The newest code that is still usable: not used, not expired.
+export async function liveCode(dealerId, nowIso) {
+  const rows = await call(
+    `flip_dealer_codes?dealer_id=eq.${dealerId}&used_at=is.null&expires_at=gt.${encodeURIComponent(nowIso)}` +
+    "&select=id,code_hash,attempts&order=created_at.desc&limit=1");
+  return rows[0] || null;
+}
+
+export async function patchCode(id, fields) {
+  await call(`flip_dealer_codes?id=eq.${Number(id)}`, { method: "PATCH", body: fields, prefer: "return=minimal" });
+}
+
+export async function dealerPriceList(dealerId) {
+  return call("rpc/flip_dealer_price_list", { method: "POST", body: { p_dealer_id: dealerId } });
+}
+
+// Returns { ok: true, order } or { ok: false, error } — the database's own
+// message, because its refusals ("only an owner…", "postcode must be 4
+// digits") are written to be shown to a person.
+export async function createDealerOrder(dealerId, order) {
+  const r = await fetch(`${url()}/rest/v1/rpc/create_flip_dealer_order`, {
+    method: "POST",
+    headers: { apikey: key(), Authorization: `Bearer ${key()}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ p_dealer_id: dealerId, p_order: order }),
+  });
+  const text = await r.text();
+  let j = null;
+  try { j = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
+  if (r.ok) return { ok: true, order: j };
+  // P0001 = a RAISE in the function: a message meant for a person. Anything
+  // else is ours to look at, not the dealer's to read.
+  if (j?.code === "P0001" || j?.code === "42501") return { ok: false, error: j.message };
+  throw new Error(`create_flip_dealer_order -> ${r.status}: ${text}`);
+}
+
+export async function dealerOrders(dealerId) {
+  const cols = "invoice_number,created_at,name,address,items,amount_total,due_date,paid_at,packed_at,tracking_number,customer_ref";
+  return call(`flip_orders?dealer_id=eq.${dealerId}&select=${cols}&order=created_at.desc&limit=50`);
+}

@@ -29,6 +29,7 @@
 
 import { readFileSync } from "node:fs";
 import { money } from "./catalog.js";
+import { invoiceTitle } from "./invoice.js";
 
 const FONTS = {
   regular: new URL("./fonts/flip-sans.ttf", import.meta.url),
@@ -78,7 +79,7 @@ export async function invoicePdfBase64(inv) {
     const regular = await doc.embedFont(bytes.regular, { subset: true });
     const bold = await doc.embedFont(bytes.bold, { subset: true });
 
-    doc.setTitle(`${inv.isTaxInvoice ? "Tax invoice" : "Order confirmation"} ${inv.number}`);
+    doc.setTitle(`${invoiceTitle(inv)} ${inv.number}`);
     doc.setProducer("flipbikes.co.nz");
     doc.setCreationDate(new Date());
 
@@ -116,11 +117,15 @@ export async function invoicePdfBase64(inv) {
 
     // The document's own title, right-aligned against the sender block.
     const titleY = PAGE.h - M - 30;
-    page.drawText(inv.isTaxInvoice ? "TAX INVOICE" : "ORDER CONFIRMATION", {
-      x: M + INNER - bold.widthOfTextAtSize(inv.isTaxInvoice ? "TAX INVOICE" : "ORDER CONFIRMATION", 14),
+    const titleText = invoiceTitle(inv);
+    page.drawText(titleText, {
+      x: M + INNER - bold.widthOfTextAtSize(titleText, 14),
       y: titleY, size: 14, font: bold, color: col(INK),
     });
     const meta = [`Invoice no. ${inv.number}`, `Date: ${inv.date}`];
+    // A trade invoice is a bill; when it is due belongs next to its number.
+    if (inv.trade && inv.dueDate && !inv.paid) meta.push(`Due: ${inv.dueDate}`);
+    if (inv.trade && inv.yourRef) meta.push(`Your ref: ${inv.yourRef}`);
     meta.forEach((line, i) => {
       page.drawText(line, {
         x: M + INNER - regular.widthOfTextAtSize(line, 9.5),
@@ -133,11 +138,32 @@ export async function invoicePdfBase64(inv) {
     down(26);
 
     // -------------------------------------------------------------- buyer
+    // Two columns on a trade invoice: who PAYS on the left, where it GOES on
+    // the right. For a dropship order those are different people, and the
+    // accountant reading the left half should not have to guess at the right.
+    const top = y;
     text("BILL TO", { size: 8, font: bold, colour: MUTED });
     down(14);
     text(inv.buyer.name || "—", { size: 11, font: bold });
     down(13);
+    if (inv.buyer.contact) { text(`Attn: ${inv.buyer.contact}`, { size: 10, colour: MUTED }); down(12); }
     for (const line of inv.buyer.address) { text(line, { size: 10, colour: MUTED }); down(12); }
+    if (inv.shipTo) {
+      const leftBottom = y;
+      const SX = M + INNER / 2;
+      y = top;
+      text(inv.shipTo.collect ? "DELIVERY" : "DELIVER TO", { x: SX, size: 8, font: bold, colour: MUTED });
+      down(14);
+      if (inv.shipTo.collect) {
+        text("Collected from our workshop", { x: SX, size: 11, font: bold });
+        down(13);
+      } else {
+        text(inv.shipTo.name || "—", { x: SX, size: 11, font: bold });
+        down(13);
+        for (const line of inv.shipTo.address) { text(line, { x: SX, size: 10, colour: MUTED }); down(12); }
+      }
+      y = Math.min(y, leftBottom);
+    }
 
     down(18);
 
@@ -145,6 +171,7 @@ export async function invoicePdfBase64(inv) {
     // Right edges, so every money column lines up on its last digit.
     const X = { item: M, qty: M + 330, each: M + 420, total: M + INNER };
 
+    if (inv.trade) { text("Prices exclude GST", { size: 8.5, colour: MUTED }); down(14); }
     text("ITEM", { size: 8, font: bold, colour: MUTED });
     text("QTY", { x: X.qty, size: 8, font: bold, colour: MUTED, align: "right" });
     text("EACH", { x: X.each, size: 8, font: bold, colour: MUTED, align: "right" });
@@ -168,17 +195,31 @@ export async function invoicePdfBase64(inv) {
       down(2);
     }
 
-    text("Shipping", { size: 10, colour: MUTED });
-    text(money(inv.shipping), { x: X.total, size: 10, align: "right" });
-    down(12);
+    // A collection with nothing charged gets no freight line: "$0.00" there
+    // reads like something was forgotten.
+    if (!(inv.trade && inv.shipTo?.collect && !inv.shipping)) {
+      text(inv.trade ? "Freight" : "Shipping", { size: 10, colour: MUTED });
+      text(money(inv.shipping), { x: X.total, size: 10, align: "right" });
+      down(12);
+    }
     rule();
     down(20);
 
     // -------------------------------------------------------------- total
-    text(`TOTAL ${inv.isTaxInvoice ? "(including GST) " : ""}NZD`, { size: 11, font: bold });
+    if (inv.trade) {
+      // Ex-GST in, so the GST is ADDED and shown as its own line above the
+      // total — the reverse of a web invoice, where it is already inside it.
+      text("Subtotal (excluding GST)", { size: 10, colour: MUTED });
+      text(money(inv.subtotal), { x: X.total, size: 10, align: "right" });
+      down(15);
+      text(`GST ${inv.gstNote}`, { size: 10, colour: MUTED });
+      text(money(inv.gst), { x: X.total, size: 10, align: "right" });
+      down(18);
+    }
+    text(`TOTAL ${inv.isTaxInvoice || inv.trade ? "(including GST) " : ""}NZD`, { size: 11, font: bold });
     text(money(inv.total), { x: X.total, size: 13, font: bold, align: "right" });
     down(16);
-    if (inv.isTaxInvoice) {
+    if (inv.isTaxInvoice && !inv.trade) {
       text(`GST (${inv.gstNote.toLowerCase()})`, { size: 9.5, colour: MUTED });
       text(money(inv.gst), { x: X.total, size: 9.5, colour: MUTED, align: "right" });
       down(16);
@@ -187,7 +228,11 @@ export async function invoicePdfBase64(inv) {
     down(10);
     rule();
     down(16);
-    text("Paid by card. Prices include GST.", { size: 9.5, colour: MUTED });
+    if (inv.trade) {
+      for (const part of wrap(inv.payment, bold, 10, INNER)) { text(part, { size: 10, font: bold }); down(13); }
+    } else {
+      text("Paid by card. Prices include GST.", { size: 9.5, colour: MUTED });
+    }
 
     // ------------------------------------------------------------- footer
     page.drawText("flipbikes.co.nz", {
@@ -219,4 +264,4 @@ function wrap(s, font, size, maxWidth) {
 
 /** The filename the customer sees in their inbox. */
 export const invoicePdfName = (inv) =>
-  `${inv.isTaxInvoice ? "Tax-invoice" : "Order"}-${inv.number}.pdf`;
+  `${inv.isTaxInvoice ? "Tax-invoice" : inv.trade ? "Invoice" : "Order"}-${inv.number}.pdf`;

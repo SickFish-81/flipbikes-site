@@ -13,7 +13,8 @@
 
 import crypto from "node:crypto";
 import { bySku, money } from "./_lib/catalog.js";
-import { dbConfigured, claimOrder, patchOrder, takeStock, logEmail } from "./_lib/db.js";
+import { dbConfigured, claimOrder, patchOrder, takeStock } from "./_lib/db.js";
+import { sendLogged, recipients, REPLY_TO } from "./_lib/mail.js";
 import { business } from "./_lib/business.js";
 import { buildInvoice, invoiceText, invoiceHtml, invoiceNumber } from "./_lib/invoice.js";
 import { invoicePdfBase64, invoicePdfName } from "./_lib/invoicePdf.js";
@@ -22,25 +23,7 @@ import { invoicePdfBase64, invoicePdfName } from "./_lib/invoicePdf.js";
 // parse the body for us.
 export const config = { api: { bodyParser: false } };
 
-// Who hears about a new order. Craig packs them; Ben is on it as well so a
-// problem with the shop is noticed by someone who can fix it, rather than
-// waiting for Craig to mention that orders stopped arriving.
-//
-// FLIP_ORDER_EMAILS overrides the list (comma separated) without a deploy —
-// useful when someone is away, and it keeps a staffing decision out of a
-// public repo. Craig is the fallback, never nobody.
-const DEFAULT_ORDER_EMAILS = "craig@betterservice.co.nz,xspyder5x@gmail.com";
-// Read per request, not once at import: a value captured at module load only
-// changes on a redeploy, which is exactly what this is meant to avoid. An
-// empty or all-whitespace list falls back rather than emailing nobody — the
-// order email is the only thing that tells anyone a sale happened.
-const recipients = () => {
-  const list = String(process.env.FLIP_ORDER_EMAILS || "")
-    .split(",").map((e) => e.trim()).filter(Boolean);
-  return list.length ? list : DEFAULT_ORDER_EMAILS.split(",");
-};
-const FROM = "Flip Bikes Website <noreply@flipbikes.co.nz>";
-const REPLY_TO = "craig@betterservice.co.nz";
+// Sending and logging email lives in _lib/mail.js, shared with trade orders.
 
 async function rawBody(req) {
   if (Buffer.isBuffer(req.body)) return req.body.toString("utf8");
@@ -141,57 +124,6 @@ function buildEmails(order, remaining, inv) {
 // `attachments` is Resend's shape: [{ filename, content }] with content as
 // base64. Omitted entirely when there is nothing to attach — an empty array is
 // not the same thing to every mail client.
-async function send(key, { to, subject, text, html, reply_to, attachments }) {
-  const r = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      from: FROM, to: Array.isArray(to) ? to : [to], reply_to, subject, text,
-      ...(html ? { html } : {}),
-      ...(attachments?.length ? { attachments } : {}),
-    }),
-  });
-  if (!r.ok) throw new Error(`Resend ${r.status}: ${await r.text()}`);
-  // The message id, so email_log can be joined to the delivery events Resend
-  // sends later. Without it a row here and a bounce there never meet.
-  const body = await r.json().catch(() => null);
-  return body?.id ?? null;
-}
-
-// Send, and leave a record either way.
-//
-// The record is the whole point. Before this the shop logged nothing: a
-// successful email appeared in email_log only because Resend's webhook called
-// back and created an orphan row labelled "unknown", and a send that FAILED
-// left no trace at all. See the note on logEmail in _lib/db.js.
-//
-// Logging is never allowed to turn a sent email into a failed request — the
-// money has already been taken. A failed SEND still throws, because Stripe
-// retrying is the right answer to that.
-async function sendLogged(key, { kind, sessionId, ...opts }) {
-  let resendId = null;
-  try {
-    resendId = await send(key, opts);
-  } catch (err) {
-    await logQuietly({ kind, to: opts.to, subject: opts.subject, sessionId,
-                       status: "failed", error: String(err?.message ?? err) });
-    throw err;
-  }
-  await logQuietly({ kind, to: opts.to, subject: opts.subject, sessionId, resendId, status: "accepted" });
-  return resendId;
-}
-
-async function logQuietly(entry) {
-  if (!dbConfigured()) return;
-  try {
-    await logEmail(entry);
-  } catch (err) {
-    // The email is already sent. Losing its log line is a nuisance; failing
-    // the webhook over it would make Stripe retry and send it twice.
-    console.error("email_log write failed (the email itself was unaffected):", err?.message ?? err);
-  }
-}
-
 // Everything the order row is, derived from the Stripe session, in one place
 // so it can be tested without a webhook, a signature or a database.
 export function orderRowFrom(s) {

@@ -39,8 +39,8 @@ export async function resolveAddress(country, input, sessionToken) {
 }
 
 // -> { lines, address, shipping } or { error, status }
-export async function priceOrder({ items, country, address: addressInput, sessionToken, declaredRural = false }) {
-  const cart = parseCart(items);
+export async function priceOrder({ items, country, address: addressInput, sessionToken, declaredRural = false, maxQty }) {
+  const cart = parseCart(items, maxQty ? { maxQty } : undefined);
   if (cart.error) return { error: cart.error, status: 400 };
   if (country !== "NZ" && country !== "AU") return { error: "Please choose a delivery country.", status: 400 };
 

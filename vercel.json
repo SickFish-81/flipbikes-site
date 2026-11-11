@@ -6,5 +6,11 @@
     "api/**/*.js": {
       "includeFiles": "api/_lib/fonts/**"
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/trade",
+      "destination": "/trade.html"
+    }
+  ]
 }

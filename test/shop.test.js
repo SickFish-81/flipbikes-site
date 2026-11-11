@@ -774,7 +774,7 @@ const INDEXABLE = {
   "faq.html": "https://www.flipbikes.co.nz/faq.html",
   "contact.html": "https://www.flipbikes.co.nz/contact.html",
 };
-const NOT_INDEXABLE = ["cart.html", "thanks.html", "styleguide.html", "404.html"];
+const NOT_INDEXABLE = ["cart.html", "thanks.html", "styleguide.html", "404.html", "trade.html"];
 
 test("seo: every page is either canonical-tagged or noindexed, and we decided which", async () => {
   const { readdirSync } = await import("node:fs");

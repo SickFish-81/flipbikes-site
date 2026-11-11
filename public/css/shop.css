@@ -55,3 +55,16 @@
 .cart-field-check small { grid-column: 2; margin-top: 4px; }
 .cart-field-check[hidden] { display: none; }
 .cart-check { width: 20px; height: 20px; margin: 0; accent-color: #ffc800; }
+
+/* Dealer portal (trade.html) */
+.trade-card { max-width: 520px; }
+.trade-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 16px; }
+.trade-head p { margin: 0; }
+.trade-tabs { display: flex; gap: 8px; margin: 0 0 8px; border-bottom: 1px solid #333; }
+.trade-tab { background: none; border: 0; border-bottom: 3px solid transparent; color: #aaa; padding: 10px 4px; margin-right: 16px; font-size: 15px; cursor: pointer; }
+.trade-tab.is-on { color: #ffc800; border-bottom-color: #ffc800; }
+.trade-link { color: #ffc800; text-decoration: underline; }
+.trade-secondary { background: none; color: #ffc800; border: 1px solid #ffc800; padding: 10px 18px; font-size: 14px; cursor: pointer; }
+.trade-secondary:disabled { opacity: .6; cursor: wait; }
+.trade-code { letter-spacing: 6px; font-size: 22px; max-width: 200px; }
+.trade-done { font-family: "Zen Dots", sans-serif; font-weight: 400; color: #ffc800; font-size: 22px; }

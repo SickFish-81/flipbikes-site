@@ -5,6 +5,10 @@
 //   FLIP_GST_NUMBER        Craig's IRD GST number, e.g. 123-456-789
 //   FLIP_BUSINESS_NAME     the registered / trading name to show (default below)
 //   FLIP_BUSINESS_ADDRESS  address lines separated by |  e.g. 556 Te Puke Highway|Te Puke 3187
+//   FLIP_BANK_ACCOUNT      the account trade customers pay into, e.g. 12-3456-7890123-00
+//                          Only trade invoices use it — web orders are paid by card.
+//                          Without it a trade invoice still goes, and says to get in
+//                          touch for payment details, rather than printing nothing.
 //
 // WITHOUT a GST number the customer gets an "Order confirmation", NOT a tax
 // invoice: a document headed "Tax Invoice" with no GST number on it isn't a
@@ -18,6 +22,7 @@ export function business() {
     gstNumber: gst.replace(/\D/g, "").length >= 8 ? gst : "",
     email: "craig@betterservice.co.nz",
     phone: "+64 021 0832 7787",
+    bankAccount: String(process.env.FLIP_BANK_ACCOUNT || "").trim(),
   };
 }
 
