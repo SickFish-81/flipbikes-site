@@ -1,10 +1,10 @@
 // Book one parcel with the carrier and file its label.
 //
 // This is the step between "a customer paid" and "a label is waiting in the
-// printer". It is deliberately NOT wired into the Stripe webhook yet: there
-// is no live carrier account, so switching it on would do nothing but write
-// errors onto real orders. It runs when something calls it, and the thing
-// that will call it is one line in the webhook when Ben says so.
+// printer". It runs when Craig presses "Book courier" on the label sheet in
+// the Betterservice dashboard (POST /api/trade, action "book"), never on its
+// own: not from the Stripe webhook, not on a timer. A booking costs money, so
+// a person asks for each one.
 //
 // THE ONE RULE THIS FILE EXISTS TO ENFORCE: never create two consignments for
 // one order. Stripe can deliver the same webhook twice, Craig can press the
@@ -26,6 +26,7 @@ import { bySku, isSmall, weightOf } from "./catalog.js";
 import { quoteShipping } from "./shipping.js";
 import { gssConfigured, destinationFrom, packagesFor, rates, createShipment, fetchLabel } from "./gss.js";
 import { orderForConsignment, patchOrder, markLabelError, storeLabelImage } from "./db.js";
+import { collectingCarriers } from "./liveRates.js";
 import { invoiceNumber } from "./invoice.js";
 
 // What shape the parcel is, from what was actually bought. The ORDER ROW is
@@ -71,7 +72,23 @@ export function cheapest(available) {
   return priced[0].q;
 }
 
-// -> { ok, skipped?, reason?, consignmentId?, connote?, carrier?, charge?, rural? }
+// Pick what to book: the cheapest quote from a carrier that COLLECTS from the
+// workshop. Post Haste and NZ Couriers will happily quote Te Puke Highway and
+// then never turn up — their parcels have to be dropped at a depot — so a
+// cheaper quote from them is not cheaper, it's a box that doesn't leave. If
+// the carrier the customer was quoted at checkout is still offered, it wins.
+export function pickCollecting(available, preferred = null) {
+  const collects = collectingCarriers();
+  const ok = (available || []).filter((q) => collects.includes(String(q.CarrierName || "").toLowerCase()));
+  const pref = String(preferred || "").toLowerCase();
+  if (pref) {
+    const same = cheapest(ok.filter((q) => String(q.CarrierName || "").toLowerCase() === pref));
+    if (same) return same;
+  }
+  return cheapest(ok);
+}
+
+// -> { ok, skipped?, reason?, consignmentId?, connote?, carrier?, charge?, trackingUrl?, rural? }
 //
 // NEVER THROWS. Every caller of this has already taken a customer's money, so
 // a carrier outage must not become a 500 that makes Stripe retry the whole
@@ -97,6 +114,18 @@ export async function ensureConsignment(sessionId, { signatureRequired = true } 
       return { ok: false, skipped: true, reason: "No carrier configured (GSS_ACCESS_KEY / GSS_SITE_ID unset)." };
     }
 
+    // Nothing to send. Not an error on the order — the customer is picking it up.
+    const a = order.address || {};
+    if (a.collect === true) {
+      return { ok: false, skipped: true, reason: "This order is being collected — there is no courier to book." };
+    }
+    // Only NZ is booked from here. International goes NZ Post International,
+    // with customs paperwork, and is still ticketed by hand.
+    const country = String(order.country || a.country || "NZ").toUpperCase();
+    if (country !== "NZ") {
+      return { ok: false, skipped: true, reason: `International (${country}) orders are still ticketed by hand.` };
+    }
+
     const reference = order.invoice_number ? invoiceNumber(order.invoice_number) : String(sessionId).slice(-8).toUpperCase();
     const destination = destinationFrom(order);
 
@@ -114,12 +143,14 @@ export async function ensureConsignment(sessionId, { signatureRequired = true } 
     const packages = packagesFor(parcel);
 
     const { available, rejected } = await rates({ destination, packages, signatureRequired, reference });
-    const pick = cheapest(available);
+    const pick = pickCollecting(available, order.shipping_carrier);
     if (!pick) {
       // Say WHY nobody quoted. Without this, "no rates" is indistinguishable
       // from a bad address, a lane nobody serves, and an account problem.
       const why = rejected.map((r) => `${r.Carrier || "?"}: ${r.Reason || "no reason"}`).join("; ");
-      throw new Error(`No carrier quoted this address${why ? " — " + why : "."}`);
+      const others = available.map((q) => q.CarrierName).filter(Boolean);
+      const also = others.length ? ` Quoted only by carriers that don't collect from the workshop: ${[...new Set(others)].join(", ")}.` : "";
+      throw new Error(`No collecting carrier quoted this address${why ? " — " + why : "."}${also}`);
     }
 
     const booked = await createShipment({ destination, packages, quoteId: pick.QuoteId, reference, signatureRequired });
@@ -133,14 +164,29 @@ export async function ensureConsignment(sessionId, { signatureRequired = true } 
       label_error: null,
     });
 
+    // What the freight actually cost, for the reports page, so Craig doesn't
+    // have to type it in. Their charge excludes GST; freight_cost is GST
+    // inclusive cents. Only filled when empty — a figure someone typed wins.
+    // Separate from the patch above, and allowed to fail, because nothing
+    // about the booking depends on it.
+    if (typeof booked.charge === "number" && (order.freight_cost === null || order.freight_cost === undefined)) {
+      try {
+        await patchOrder(sessionId, {
+          freight_cost: Math.round(booked.charge * 115),
+          freight_cost_entered_at: new Date().toISOString(),
+        });
+      } catch (e) { console.error("freight_cost not recorded for", sessionId, e?.message); }
+    }
+
     await fileLabel({ ...order, consignment_id: booked.consignmentId }, booked.connote);
 
     return {
       ok: true,
       consignmentId: booked.consignmentId,
       connote: booked.connote,
-      carrier: booked.carrier,
+      carrier: booked.carrier || pick.CarrierName || null,
       charge: booked.charge,
+      trackingUrl: booked.trackingUrl,
       // What the carrier says about the address, as opposed to what our table
       // guessed and what the customer ticked. This is the answer to the rural
       // question the cart has been asking customers for.

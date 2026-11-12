@@ -1,6 +1,6 @@
 // POST /api/trade — the owner-only half of FLIP trade orders.
 //
-// Called from the Betterservice dashboard, never from the shop. Two actions:
+// Called from the Betterservice dashboard, never from the shop. Four actions:
 //
 //   { action: "quote", items, address }
 //       What the freight would COST: the carrier's own quote, excluding GST,
@@ -11,6 +11,17 @@
 //       (through create_flip_trade_order) and email it to the trade customer,
 //       with Craig's copy. The same invoice generator, PDF and mail path as a
 //       web order — trade invoices are not a second system.
+//
+//   { action: "book", invoice_number }
+//       Book the courier with GoSweetSpot and file the label. ANY order, web
+//       or trade — the label sheet is the same page for both. Costs money, so
+//       it refuses anything that looks already sent: an order marked packed
+//       with no booking was ticketed by hand, and booking it again would buy
+//       a second courier for a box that has gone.
+//
+//   { action: "label", invoice_number }
+//       The stored carrier label, as base64 PNG, for the sheet to print. The
+//       bucket is private; this is the door to it.
 //
 // WHY THIS IS NOT /api/quote WITH A FLAG
 //
@@ -32,8 +43,51 @@
 // CORS lets the dashboard's browser READ the answer. It is not the lock — the
 // token is. A request from anywhere without an owner's token gets nothing.
 
-import { callerIsOwner } from "./_lib/db.js";
+import { callerIsOwner, orderForBooking, labelImage } from "./_lib/db.js";
 import { atCostQuote, sendTradeInvoice } from "./_lib/tradeOrder.js";
+import { ensureConsignment } from "./_lib/consignment.js";
+
+const invoiceNo = (v) => {
+  const n = Number(String(v ?? "").replace(/^FLIP-/i, ""));
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
+
+async function book(b) {
+  const n = invoiceNo(b.invoice_number);
+  if (!n) return { status: 400, body: { error: "Which order? No invoice number." } };
+  const o = await orderForBooking(n);
+  if (!o) return { status: 404, body: { error: `No order FLIP-${n}.` } };
+
+  // Done already: say so, don't touch the carrier.
+  if (o.consignment_id && o.label_fetched_at) {
+    return { status: 200, body: { ok: true, already: true, connote: o.tracking_number } };
+  }
+  // Packed with no booking = it went on a hand-written ticket. Never book a
+  // second courier for it. (Booked-but-no-label is different: that retry
+  // only fetches the label for the consignment we already have.)
+  if (o.packed_at && !o.consignment_id) {
+    return { status: 409, body: { error: `FLIP-${n} is already marked as sent without a GoSweetSpot booking — it was ticketed by hand, so it won't be booked again.` } };
+  }
+  if (o.address?.collect === true) {
+    return { status: 400, body: { error: "This order is being collected — there's no courier to book." } };
+  }
+
+  const r = await ensureConsignment(o.session_id);
+  if (!r.ok) return { status: r.skipped ? 400 : 502, body: { error: r.reason || "The booking didn't go through." } };
+  return {
+    status: 200,
+    body: { ok: true, connote: r.connote, carrier: r.carrier || null, charge: r.charge ?? null,
+            trackingUrl: r.trackingUrl || null, recovered: !!r.reason },
+  };
+}
+
+async function label(b) {
+  const n = invoiceNo(b.invoice_number);
+  if (!n) return { status: 400, body: { error: "Which order? No invoice number." } };
+  const png = await labelImage(n);
+  if (!png) return { status: 404, body: { error: `No courier label filed for FLIP-${n} yet.` } };
+  return { status: 200, body: { ok: true, png: Buffer.from(png).toString("base64") } };
+}
 
 // Where the dashboard runs. FLIP_TRADE_ORIGINS overrides it (comma separated),
 // e.g. to add a preview deployment while testing, without a code change.
@@ -73,6 +127,8 @@ export default async function handler(req, res) {
     let r;
     if (b.action === "quote") r = await atCostQuote(b);
     else if (b.action === "invoice") r = await sendTradeInvoice(b.invoice_number, { resend: b.resend === true });
+    else if (b.action === "book") r = await book(b);
+    else if (b.action === "label") r = await label(b);
     else r = { status: 400, body: { error: "Unknown action." } };
     return res.status(r.status).json(r.body);
   } catch (err) {

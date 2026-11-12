@@ -279,3 +279,86 @@ test("a collection prints no freight line and no delivery address", () => {
   assert.match(t, /Delivery: collected from our workshop/);
   assert.doesNotMatch(t, /Freight/);
 });
+
+// ------------------------------------------------------ booking the courier
+//
+// "book" spends money with the carrier, so the tests are about when it must
+// NOT: not for a stranger, not twice, not for a box that already went on a
+// hand-written ticket, not for a collection.
+
+let shipments;
+let storedLabel;
+function withCarrier() {
+  shipments = 0; storedLabel = null;
+  const base = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.startsWith("https://db.fake/rest/v1/flip_orders?session_id=eq.") && (opts.method || "GET") === "GET") {
+      const sid = decodeURIComponent(u.split("session_id=eq.")[1].split("&")[0]);
+      return json(Object.values(rows).filter((r) => r.session_id === sid));
+    }
+    if (u === "https://carrier.fake/api/shipments") {
+      shipments++;
+      return json({ CarrierName: "NZ Post Domestic",
+        Consignments: [{ ConsignmentId: 555, Connote: "NZP123", TrackingUrl: "https://track/NZP123", Charge: 12.05 }] });
+    }
+    if (u.startsWith("https://carrier.fake/api/labels")) return json(["iVBORw0KGgo="]);
+    if (u === "https://db.fake/storage/v1/object/flip-labels/1009.png") {
+      if (opts.method === "POST") { storedLabel = opts.body; return new Response(null, { status: 200 }); }
+      return storedLabel ? new Response(storedLabel, { status: 200 }) : new Response("not found", { status: 404 });
+    }
+    return base(url, opts);
+  };
+}
+
+test("book: a staff member who is not an owner can't book, and the carrier is not touched", async () => {
+  withCarrier();
+  const r = await call(trade, { token: STAFF, body: { action: "book", invoice_number: 1009 } });
+  assert.equal(r.code, 403);
+  assert.equal(shipments, 0);
+});
+
+test("book: an unpacked order is booked once, label filed, and a second press books nothing", async () => {
+  withCarrier();
+  Object.assign(rows[1009], { packed_at: null, consignment_id: null, tracking_number: null, label_fetched_at: null });
+
+  const r = await call(trade, { token: OWNER, body: { action: "book", invoice_number: 1009 } });
+  assert.equal(r.code, 200, JSON.stringify(r.body));
+  assert.equal(r.body.connote, "NZP123");
+  assert.equal(r.body.carrier, "NZ Post Domestic");
+  assert.equal(shipments, 1);
+  assert.equal(rows[1009].consignment_id, "555");
+  assert.ok(rows[1009].label_fetched_at);
+
+  const again = await call(trade, { token: OWNER, body: { action: "book", invoice_number: 1009 } });
+  assert.equal(again.code, 200);
+  assert.equal(again.body.already, true);
+  assert.equal(shipments, 1, "a second press must not buy a second courier");
+
+  const l = await call(trade, { token: OWNER, body: { action: "label", invoice_number: 1009 } });
+  assert.equal(l.code, 200);
+  assert.ok(l.body.png.length > 0);
+});
+
+test("book: an order already marked sent with no booking was hand-ticketed — refused", async () => {
+  withCarrier();
+  Object.assign(rows[1009], { packed_at: "2026-11-11T23:47:03Z", consignment_id: null });
+  const r = await call(trade, { token: OWNER, body: { action: "book", invoice_number: 1009 } });
+  assert.equal(r.code, 409);
+  assert.match(r.body.error, /ticketed by hand/);
+  assert.equal(shipments, 0);
+});
+
+test("book: a collection is refused", async () => {
+  withCarrier();
+  Object.assign(rows[1009], { packed_at: null, consignment_id: null, address: { collect: true } });
+  const r = await call(trade, { token: OWNER, body: { action: "book", invoice_number: 1009 } });
+  assert.equal(r.code, 400);
+  assert.equal(shipments, 0);
+});
+
+test("label: none filed yet is a 404, not a crash", async () => {
+  withCarrier();
+  const r = await call(trade, { token: OWNER, body: { action: "label", invoice_number: 1009 } });
+  assert.equal(r.code, 404);
+});

@@ -192,8 +192,17 @@ export async function storeLabelImage(invoiceNumber, bytes, contentType = "image
 // what is in it, and whether it has been booked already.
 export async function orderForConsignment(sessionId) {
   const cols = "session_id,invoice_number,name,email,phone,country,address,items," +
-    "shipping_amount,consignment_id,tracking_number,label_fetched_at,label_error";
+    "shipping_amount,shipping_carrier,freight_cost,consignment_id,tracking_number,label_fetched_at,label_error";
   const rows = await call(`flip_orders?session_id=eq.${encodeURIComponent(sessionId)}&select=${cols}`);
+  return rows[0] || null;
+}
+
+// What the "Book courier" button needs to decide whether it may book at all.
+// By invoice number, because that is what the dashboard knows the order by.
+export async function orderForBooking(invoiceNumber) {
+  const cols = "session_id,invoice_number,country,address,packed_at,consignment_id," +
+    "tracking_number,label_fetched_at,label_error";
+  const rows = await call(`flip_orders?invoice_number=eq.${Number(invoiceNumber)}&select=${cols}`);
   return rows[0] || null;
 }
 

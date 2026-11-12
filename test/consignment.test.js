@@ -14,7 +14,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { ensureConsignment, parcelFor, cheapest } from "../api/_lib/consignment.js";
+import { ensureConsignment, parcelFor, cheapest, pickCollecting } from "../api/_lib/consignment.js";
 import { packagesFor, destinationFrom, CARTON_CM } from "../api/_lib/gss.js";
 
 const SESSION = "cs_test_session_1";
@@ -58,14 +58,15 @@ beforeEach(() => {
   process.env.GSS_ACCESS_KEY = "key_fake";
   process.env.GSS_SITE_ID = "4242";
   process.env.GSS_BASE_URL = "https://carrier.fake";
+  delete process.env.FLIP_COLLECTING_CARRIERS;
 
   orders = [anOrder()];
   patches = [];
   calls = [];
   stored = {};
   carrier = {
-    rates: { Available: [{ QuoteId: "q-1", CarrierName: "Castle Parcels", Charge: 21.5, IsRuralDelivery: false }], Rejected: [] },
-    shipment: { CarrierName: "Castle Parcels", Consignments: [{ ConsignmentId: 99001, Connote: "CSWH0002999", TrackingUrl: "https://track/CSWH0002999", Charge: 21.5 }] },
+    rates: { Available: [{ QuoteId: "q-1", CarrierName: "NZ Post Domestic", Charge: 21.5, IsRuralDelivery: false }], Rejected: [] },
+    shipment: { CarrierName: "NZ Post Domestic", Consignments: [{ ConsignmentId: 99001, Connote: "CSWH0002999", TrackingUrl: "https://track/CSWH0002999", Charge: 21.5 }] },
     label: [TINY_PNG_B64],
     labelFails: false,
     storageFails: false,
@@ -119,7 +120,7 @@ test("books the parcel, files the label, and records both", async () => {
   assert.equal(out.ok, true);
   assert.equal(out.connote, "CSWH0002999");
   assert.equal(out.consignmentId, "99001");
-  assert.equal(out.carrier, "Castle Parcels");
+  assert.equal(out.carrier, "NZ Post Domestic");
   assert.equal(booked(), 1);
   assert.ok(stored["1006"], "the label PNG was filed under the invoice number");
 });
@@ -309,4 +310,74 @@ test("a quote with no Charge falls back to Cost rather than sorting as free", ()
 test("no usable quotes returns null rather than undefined", () => {
   assert.equal(cheapest([]), null);
   assert.equal(cheapest([{ Charge: 10 }]), null);
+});
+
+// ------------------------------------------- only carriers that come to us
+
+test("a cheaper carrier that won't collect from the workshop is never booked", async () => {
+  carrier.rates = { Available: [
+    { QuoteId: "q-ph", CarrierName: "Post Haste", Charge: 9.5 },
+    { QuoteId: "q-nzc", CarrierName: "NZ Couriers", Charge: 10.1 },
+    { QuoteId: "q-nzp", CarrierName: "NZ Post Domestic", Charge: 12.05 },
+  ], Rejected: [] };
+  let bookedQuote = null;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    if (String(url).includes("api/shipments")) bookedQuote = JSON.parse(opts.body).QuoteId;
+    return realFetch(url, opts);
+  };
+
+  const out = await ensureConsignment(SESSION);
+  assert.equal(out.ok, true);
+  assert.equal(bookedQuote, "q-nzp");
+});
+
+test("only non-collecting carriers quoted: nothing is booked, and the error says why", async () => {
+  carrier.rates = { Available: [{ QuoteId: "q-ph", CarrierName: "Post Haste", Charge: 9.5 }], Rejected: [] };
+  const out = await ensureConsignment(SESSION);
+  assert.equal(out.ok, false);
+  assert.equal(booked(), 0);
+  assert.match(orders[0].label_error, /don't collect/);
+  assert.match(orders[0].label_error, /Post Haste/);
+});
+
+test("pickCollecting prefers the carrier the customer was quoted, then the cheapest that collects", () => {
+  process.env.FLIP_COLLECTING_CARRIERS = "NZ Post Domestic, Mainfreight";
+  const q = [
+    { QuoteId: "a", CarrierName: "Mainfreight", Charge: 11 },
+    { QuoteId: "b", CarrierName: "NZ Post Domestic", Charge: 12 },
+    { QuoteId: "c", CarrierName: "Post Haste", Charge: 5 },
+  ];
+  assert.equal(pickCollecting(q, "NZ Post Domestic").QuoteId, "b");
+  assert.equal(pickCollecting(q, null).QuoteId, "a");
+  assert.equal(pickCollecting(q, "Post Haste").QuoteId, "a", "a preferred carrier that doesn't collect is ignored");
+  assert.equal(pickCollecting([{ QuoteId: "c", CarrierName: "Post Haste", Charge: 5 }]), null);
+});
+
+test("a collect order is never booked, and is not an error on the order", async () => {
+  orders = [anOrder({ address: { ...anOrder().address, collect: true } })];
+  const out = await ensureConsignment(SESSION);
+  assert.equal(out.ok, false);
+  assert.equal(out.skipped, true);
+  assert.equal(carrierCalls().length, 0);
+  assert.equal(patches.length, 0);
+});
+
+test("an international order is left for hand ticketing", async () => {
+  orders = [anOrder({ country: "AU" })];
+  const out = await ensureConsignment(SESSION);
+  assert.equal(out.skipped, true);
+  assert.equal(carrierCalls().length, 0);
+});
+
+test("the booked charge fills freight_cost (GST inclusive cents) only when it is empty", async () => {
+  const out = await ensureConsignment(SESSION);
+  assert.equal(out.trackingUrl, "https://track/CSWH0002999");
+  assert.equal(orders[0].freight_cost, 2473); // $21.50 + GST
+
+  orders = [anOrder({ freight_cost: 3000 })];
+  patches = [];
+  await ensureConsignment(SESSION);
+  assert.equal(orders[0].freight_cost, 3000, "a figure someone typed is not overwritten");
+  assert.ok(!patches.some((p) => "freight_cost" in p));
 });

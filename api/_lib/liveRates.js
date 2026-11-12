@@ -37,9 +37,12 @@ import { quoteShipping } from "./shipping.js";
 //
 // Override without a deploy, because the day Craig arranges a Post Haste pickup
 // this list is wrong and nobody will remember this file exists.
-const COLLECTS = () =>
+// Exported because booking (consignment.js) must obey the same list: a parcel
+// booked with a carrier that won't come to the workshop just sits there.
+export const collectingCarriers = () =>
   String(process.env.FLIP_COLLECTING_CARRIERS || "NZ Post Domestic")
     .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+const COLLECTS = collectingCarriers;
 
 // What we add to the carrier's number before charging it.
 //
