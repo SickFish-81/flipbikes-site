@@ -27,7 +27,7 @@ import { business } from "./_lib/business.js";
 import { bySku, PRODUCTS } from "./_lib/catalog.js";
 import {
   dbConfigured, getStock, dealerByEmail, dealerById, codesSince, insertCode, liveCode, patchCode,
-  dealerPriceList, createDealerOrder, dealerOrders, tradeOrderByInvoice,
+  dealerPriceList, createDealerOrder, dealerOrders, tradeOrderByInvoice, signedInBefore,
 } from "./_lib/db.js";
 import {
   portalConfigured, newCode, hashCode, codeMatches, signSession, readSession, cookieFrom,
@@ -163,7 +163,38 @@ async function verifyCode(b, res) {
   }
   await patchCode(c.id, { used_at: new Date().toISOString() });
   res.setHeader("Set-Cookie", sessionCookie(signSession(d.id, d.session_version)));
+  // Tell the people who get the order emails. Never allowed to stop the
+  // dealer getting in: they have a valid code, the email is a courtesy.
+  try { await tellUsSignedIn(d, c.id); } catch (err) { console.error("dealer sign-in notice:", err?.message ?? err); }
   return res.status(200).json({ ok: true, dealer: publicDealer(d) });
+}
+
+// A dealer's FIRST sign-in is the moment they've actually joined, so it gets
+// a headline. Later ones are rare — sessions last indefinitely, so a new
+// sign-in means a new device or browser — and are worth a quieter note,
+// because one that wasn't them is how a borrowed inbox would show up.
+async function tellUsSignedIn(d, codeId) {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) return;
+  const first = !(await signedInBefore(d.id, codeId));
+  const when = new Date().toLocaleString("en-NZ", { timeZone: "Pacific/Auckland", dateStyle: "medium", timeStyle: "short" });
+  const who = [d.business, d.contact && `(${d.contact})`].filter(Boolean).join(" ");
+  const subject = first
+    ? `New FLIP trade dealer signed in: ${d.business}`
+    : `FLIP trade portal sign-in: ${d.business}`;
+  const lines = first
+    ? [`${who} has signed in to the FLIP trade portal for the first time.`,
+       `Email: ${d.email}`, `When: ${when}`, "",
+       "They can now order at their trade prices. Their orders arrive like website orders and go straight onto the pack list."]
+    : [`${who} signed in to the FLIP trade portal on a new device or browser.`,
+       `Email: ${d.email}`, `When: ${when}`, "",
+       "Nothing to do if that was them. If it wasn't, use \"Sign out everywhere\" on the Dealers page in the Betterservice app."];
+  await send(key, {
+    to: recipients(),
+    subject,
+    text: lines.join("\n"),
+    html: lines.map((l) => (l ? `<p>${escapeHtml(l)}</p>` : "")).join(""),
+  });
 }
 
 // --------------------------------------------------------------- the portal

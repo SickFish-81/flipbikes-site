@@ -286,6 +286,14 @@ export async function liveCode(dealerId, nowIso) {
   return rows[0] || null;
 }
 
+// Has this dealer ever signed in before, not counting the code just used?
+// A used code IS a sign-in, so the codes table already answers this.
+export async function signedInBefore(dealerId, exceptCodeId) {
+  const rows = await call(
+    `flip_dealer_codes?dealer_id=eq.${dealerId}&used_at=not.is.null&id=neq.${Number(exceptCodeId)}&select=id&limit=1`);
+  return rows.length > 0;
+}
+
 export async function patchCode(id, fields) {
   await call(`flip_dealer_codes?id=eq.${Number(id)}`, { method: "PATCH", body: fields, prefer: "return=minimal" });
 }

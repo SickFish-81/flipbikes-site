@@ -114,6 +114,10 @@ beforeEach(() => {
       }
       const dealerId = u.split("dealer_id=eq.")[1].split("&")[0];
       let rows = db.codes.filter((c) => c.dealer_id === dealerId);
+      if (u.includes("used_at=not.is.null")) {
+        const except = Number(u.split("id=neq.")[1].split("&")[0]);
+        return json(rows.filter((c) => c.used_at && c.id !== except).slice(0, 1));
+      }
       if (u.includes("used_at=is.null")) {
         const now = u.split("expires_at=gt.")[1].split("&")[0];
         rows = rows.filter((c) => !c.used_at && c.expires_at > now).reverse().slice(0, 1);
@@ -378,4 +382,44 @@ test("sessions don't expire: a two-year-old sign-in still works, and each visit 
   // ...but turning access off still ends it at once.
   db.dealers[A].portal_access = false;
   assert.equal((await call({ cookie: old, body: { action: "me" } })).code, 401);
+});
+
+// ------------------------------------------------------ telling us they're in
+
+test("a dealer's FIRST sign-in emails the order-email list, and a later one says so quietly", async () => {
+  let code = await getCode();
+  sent = [];
+  let r = await call({ body: { action: "verify_code", email: "ann@gold.test", code } });
+  assert.equal(r.code, 200);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].to, ["craig@example.test"]);
+  assert.match(sent[0].subject, /New FLIP trade dealer signed in: Gold Dealer Ltd/);
+  assert.match(sent[0].text, /first time/);
+
+  code = await getCode();
+  sent = [];
+  r = await call({ body: { action: "verify_code", email: "ann@gold.test", code } });
+  assert.equal(r.code, 200);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].subject, /^FLIP trade portal sign-in: Gold Dealer Ltd/);
+  assert.match(sent[0].text, /Sign out everywhere/);
+});
+
+test("a failed sign-in tells nobody", async () => {
+  await getCode();
+  sent = [];
+  await call({ body: { action: "verify_code", email: "ann@gold.test", code: "000001" } });
+  assert.equal(sent.length, 0);
+});
+
+test("if the notice can't be sent, the dealer still gets in", async () => {
+  const code = await getCode();
+  const base = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes("api.resend.com")) throw new Error("mail is down");
+    return base(url, opts);
+  };
+  const r = await call({ body: { action: "verify_code", email: "ann@gold.test", code } });
+  assert.equal(r.code, 200);
+  assert.ok(cookieOf(r));
 });
