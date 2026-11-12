@@ -35,6 +35,7 @@ beforeEach(() => {
   process.env.GSS_BASE_URL = "https://carrier.fake";
   delete process.env.FLIP_COLLECTING_CARRIERS;
   delete process.env.FLIP_FREIGHT_MARKUP;
+  delete process.env.FLIP_INTL_CARRIERS;
   calls = [];
   sent = [];
   fail = null;
@@ -148,13 +149,51 @@ test("a bad postcode is still refused, and no carrier is asked", async () => {
   assert.equal(carrierCalls().length, 0, "no point asking a carrier about an address we reject");
 });
 
-test("Australia is left to the table", async () => {
-  const o = await priceOrder({
-    items: THREE_CHOCKS, country: "AU",
-    address: { manual: { line1: "1 X St", suburb: "Y", city: "Sydney", postcode: "2000" } },
-  });
-  assert.equal(o.shipping.source, "table");
-  assert.equal(carrierCalls().length, 0);
+// ---------------------------------------------------------------- Australia
+
+const SYDNEY = { manual: { line1: "1 X St", suburb: "Surry Hills", city: "Sydney", postcode: "2010" } };
+const priceAu = (items = THREE_CHOCKS) => priceOrder({ items, country: "AU", address: SYDNEY });
+
+test("Australia is priced by the carrier: cheapest NZ Post International, markup, NO GST", async () => {
+  reply = quoted([
+    { QuoteId: "a1", CarrierName: "NZ Post International Courier", Charge: 100.67 },
+    { QuoteId: "a2", CarrierName: "NZ Post International Economy", Charge: 72.78 },
+    { QuoteId: "a3", CarrierName: "Aramex", Charge: 50.0 },
+  ]);
+  const o = await priceAu();
+  assert.equal(o.shipping.source, "carrier");
+  assert.equal(o.shipping.carrier, "NZ Post International Economy", "Aramex is cheaper but isn't on the list");
+  // $72.78 x 1.08 = $78.60, an export so zero-rated: no x1.15.
+  assert.equal(o.shipping.amount, 7900);
+  assert.equal(o.shipping.exGstCents, 7278);
+  assert.equal(sent[0].Destination.Address.CountryCode, "AU");
+  assert.equal(sent[0].Destination.Address.PostCode, "2010");
+});
+
+test("Australia is quoted for every carton, not a flat fee", async () => {
+  reply = quoted([{ QuoteId: "a2", CarrierName: "NZ Post International Economy", Charge: 140 }]);
+  await priceAu([{ sku: "flip-g3", qty: 5 }]);
+  assert.equal(sent[0].Packages.length, 2, "five chocks are two cartons to Australia too");
+});
+
+test("no live price to Australia means no checkout, never the unchecked $60", async () => {
+  reply = quoted([]);
+  const o = await priceAu();
+  assert.equal(o.status, 503);
+  assert.match(o.error, /Australia/);
+  assert.equal(o.shipping, undefined);
+});
+
+test("Australia refuses when the carrier is down, too", async () => {
+  fail = "network is on fire";
+  const o = await priceAu();
+  assert.equal(o.status, 503);
+});
+
+test("a carrier not on the international list is never used for Australia", async () => {
+  reply = quoted([{ QuoteId: "a3", CarrierName: "Aramex", Charge: 50.0 }]);
+  const o = await priceAu();
+  assert.equal(o.status, 503);
 });
 
 // ----------------------------------------------------------------- the parcel

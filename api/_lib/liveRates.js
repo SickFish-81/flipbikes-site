@@ -44,6 +44,18 @@ export const collectingCarriers = () =>
     .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
 const COLLECTS = collectingCarriers;
 
+// The same idea for Australia: NZ Post International is the international
+// service that collects from the workshop. Matched by the START of the name,
+// because their international services come back as more than one product
+// (economy, courier) and we want whichever of them is cheapest.
+export const internationalCarriers = () =>
+  String(process.env.FLIP_INTL_CARRIERS || "NZ Post")
+    .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+const intlOk = (name) => {
+  const n = String(name || "").toLowerCase();
+  return internationalCarriers().some((c) => n.startsWith(c));
+};
+
 // What we add to the carrier's number before charging it.
 //
 // Not greed — slack. A carrier re-measures cartons and bills what it finds, and
@@ -62,8 +74,9 @@ export const liveRatesConfigured = () => gssConfigured();
 // NEVER THROWS. A quote is on the path between a customer and a purchase.
 export async function liveShipping({ order, parcel, signatureRequired = true }) {
   if (!gssConfigured()) return null;
-  // Australia and anything else is not priced here yet; the table still owns it.
-  if ((order?.address?.country || "NZ") !== "NZ") return null;
+  const country = order?.address?.country || "NZ";
+  if (country !== "NZ" && country !== "AU") return null;
+  const au = country === "AU";
 
   try {
     const destination = destinationFrom(order);
@@ -76,7 +89,9 @@ export async function liveShipping({ order, parcel, signatureRequired = true }) 
     const collects = COLLECTS();
     const usable = available
       .map((q) => ({ q, price: typeof q.Charge === "number" ? q.Charge : null }))
-      .filter((x) => x.price !== null && collects.includes(String(x.q.CarrierName || "").toLowerCase()));
+      .filter((x) => x.price !== null && (au
+        ? intlOk(x.q.CarrierName)
+        : collects.includes(String(x.q.CarrierName || "").toLowerCase())));
 
     if (!usable.length) {
       // Say why in the log, not to the customer. "No carrier quoted this
@@ -104,12 +119,16 @@ export async function liveShipping({ order, parcel, signatureRequired = true }) 
 
     // Their rates exclude GST and include FAF/RUC. Ours are GST-inclusive
     // everywhere, because that is how a price is shown to a New Zealander.
+    // Freight to Australia is an export and zero-rated, like the goods
+    // (invoice.js, GST_ON_AUSTRALIA), so it carries no GST at all.
     const exGst = best.price * MARKUP();
-    const amount = roundUpTo50c(Math.round(exGst * 115)); // dollars -> cents, +15% GST
+    const amount = roundUpTo50c(Math.round(exGst * (au ? 100 : 115))); // dollars -> cents
 
     return {
       amount,
-      label: "Courier - New Zealand" + (best.q.IsRuralDelivery ? " (rural delivery)" : ""),
+      label: au
+        ? "NZ Post International - Australia"
+        : "Courier - New Zealand" + (best.q.IsRuralDelivery ? " (rural delivery)" : ""),
       // The carrier's own answer, not our guess and not the customer's.
       rural: best.q.IsRuralDelivery === true,
       ruralReason: best.q.IsRuralDelivery === true ? "carrier" : null,

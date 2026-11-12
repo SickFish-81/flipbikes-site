@@ -120,7 +120,17 @@ const RD_PATTERN = /\b(?:R\.?\s?D\.?|RURAL\s+DELIVERY)\s?\d{1,2}\b/i;
 // the catalog's shape.
 export function quoteShipping({ country, postcode, text = "", itemCount, chockCount = itemCount, goodsWeightG = 0, declaredRural = false }) {
   if (country === "AU") {
-    return { amount: RATES.au, label: "Courier - Australia", rural: false, ruralReason: null, region: "AU" };
+    // The PARCEL is worked out exactly as for NZ — the carrier needs it to
+    // quote — but the PRICE is not ours to guess. RATES.au was never checked
+    // against a real rate (GoSweetSpot says one carton costs ~$73, and $60 was
+    // flat however many cartons), so checkout refuses Australia unless the
+    // carrier priced it live. See order.js.
+    const cartons = chockCount > 0 ? Math.max(1, Math.ceil(chockCount / CHOCKS_PER_CARTON)) : 1;
+    const weightG = goodsWeightG + cartons * CARTON_WEIGHT_G;
+    return {
+      amount: RATES.au, label: "Australia", rural: false, ruralReason: null, region: "AU",
+      bag: false, cartons, tickets: null, weightG, needsLivePrice: true,
+    };
   }
   if (country !== "NZ") return { error: "We only deliver to New Zealand and Australia online." };
 

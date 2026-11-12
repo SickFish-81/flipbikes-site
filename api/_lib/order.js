@@ -82,6 +82,15 @@ export async function priceOrder({ items, country, address: addressInput, sessio
     parcel: table,
   });
 
+  // Australia has no checked table price, so it is the carrier's number or
+  // nothing. Refusing one order beats under-charging freight on every one.
+  if (!live && table.needsLivePrice) {
+    return {
+      error: "We couldn't get a freight price to Australia just now. Please try again in a minute, or email sales@flipbikes.co.nz and we'll quote it for you.",
+      status: 503,
+    };
+  }
+
   // When the carrier answered, its rural flag is better than ours: ours is a
   // guess from an RD pattern or a tick-box the customer filled in themselves.
   const shipping = live || table;

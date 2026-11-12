@@ -201,9 +201,13 @@ test("shipping: North vs South Island, a full carton, Australia", async () => {
   assert.equal(shipAmount(), String(NORTH));
   assert.equal(shipAmount(), String(freight(3, weigh([["flip-g3", 3]]))));
   calls.length = 0;
-  await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }) }));
-  assert.equal(shipAmount(), String(AU));
-  assert.equal(stripeBody().get("payment_intent_data[shipping][address][country]"), "AU");
+  // Australia is priced live by the carrier or not at all (liveRates.test.js
+  // covers the priced case). With no carrier here, checkout must refuse
+  // rather than charge the unchecked flat rate — and Stripe is never called.
+  const r = await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }) }));
+  assert.equal(r.code, 503);
+  assert.match(r.body.error, /Australia/);
+  assert.equal(calls.filter((c) => c.url.includes("api.stripe.com")).length, 0);
 });
 
 test("homepage: every product's price is wired to the API, not typed in", async () => {
@@ -355,11 +359,25 @@ test("shipping: the customer can declare a rural address, and it only ever ADDS 
   assert.equal(stripeBody().get("metadata[rural_why]"), "address");
 });
 
-test("shipping: declaring rural does nothing for Australia, which is a flat rate", async () => {
-  await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }), ruralDeclared: true }));
-  assert.equal(shipAmount(), String(AU));
-  assert.equal(stripeBody().get("metadata[rural]"), "no");
-  assert.equal(stripeBody().get("metadata[rural_why]"), null);
+test("shipping: Australia checks out at the carrier's price, and declaring rural does nothing", async () => {
+  process.env.GSS_ACCESS_KEY = "key_fake"; process.env.GSS_SITE_ID = "4242"; process.env.GSS_BASE_URL = "https://carrier.fake";
+  const base = globalThis.fetch;
+  globalThis.fetch = async (url, opts = {}) => {
+    if (String(url) === "https://carrier.fake/api/rates") {
+      return new Response(JSON.stringify({ Available: [{ QuoteId: "a2", CarrierName: "NZ Post International Economy", Charge: 72.78 }],
+                                           Suppressed: [], Rejected: [], ValidationErrors: {} }), { status: 200 });
+    }
+    return base(url, opts);
+  };
+  try {
+    await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }), ruralDeclared: true }));
+    assert.equal(shipAmount(), "7900", "$72.78 x 1.08, no GST on export freight, up to 50c");
+    assert.equal(stripeBody().get("payment_intent_data[shipping][address][country]"), "AU");
+    assert.equal(stripeBody().get("metadata[rural]"), "no");
+    assert.equal(stripeBody().get("metadata[rural_why]"), null);
+  } finally {
+    delete process.env.GSS_ACCESS_KEY; delete process.env.GSS_SITE_ID; delete process.env.GSS_BASE_URL;
+  }
 });
 
 test("shipping: \"Rural Delivery 3\" spelled out is caught as well as \"RD 3\"", async () => {
