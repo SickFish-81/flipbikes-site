@@ -63,7 +63,9 @@ const intlOk = (name) => {
 // between the customer paying and Craig booking. Collecting slightly more than
 // it costs is the right direction to be wrong in, and it is the same principle
 // the table was written on.
-const MARKUP = () => Number(process.env.FLIP_FREIGHT_MARKUP || "1.08");
+// 2% since 12 Nov 2026 — Ben: 8% "might put people off buying". The 50c
+// round-up below still adds a little on top.
+const MARKUP = () => Number(process.env.FLIP_FREIGHT_MARKUP || "1.02");
 const roundUpTo50c = (cents) => Math.ceil(cents / 50) * 50;
 
 export const liveRatesConfigured = () => gssConfigured();

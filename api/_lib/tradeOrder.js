@@ -38,7 +38,7 @@ export async function atCostQuote({ items, address, ruralDeclared }) {
   const s = o.shipping;
 
   if (s.source === "carrier" && typeof s.exGstCents === "number") {
-    // The carrier's Charge, excluding GST, untouched. The 8% markup and the
+    // The carrier's Charge, excluding GST, untouched. The website's markup and the
     // rounding to 50c exist on the web price because a carrier re-weighs a box
     // and bills the difference later; at cost, that difference is Craig's.
     return {

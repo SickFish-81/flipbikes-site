@@ -371,7 +371,7 @@ test("shipping: Australia checks out at the carrier's price, and declaring rural
   };
   try {
     await post(checkout, order({ country: "AU", address: manual("2000", { city: "Sydney" }), ruralDeclared: true }));
-    assert.equal(shipAmount(), "7900", "$72.78 x 1.08, no GST on export freight, up to 50c");
+    assert.equal(shipAmount(), "7450", "$72.78 x 1.02, no GST on export freight, up to 50c");
     assert.equal(stripeBody().get("payment_intent_data[shipping][address][country]"), "AU");
     assert.equal(stripeBody().get("metadata[rural]"), "no");
     assert.equal(stripeBody().get("metadata[rural_why]"), null);

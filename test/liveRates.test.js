@@ -63,10 +63,10 @@ const price = async (items = THREE_CHOCKS) =>
 test("the carrier's price is used, with GST and the markup on top", async () => {
   const o = await price();
   // NZ Post Domestic is the only carrier that collects from Te Puke. $13.65
-  // ex GST, x1.08 markup, x1.15 GST = $16.95, rounded up to the next 50c.
+  // ex GST, x1.02 markup, x1.15 GST = $16.01, rounded up to the next 50c.
   assert.equal(o.shipping.source, "carrier");
   assert.equal(o.shipping.carrier, "NZ Post Domestic");
-  assert.equal(o.shipping.amount, 1700);
+  assert.equal(o.shipping.amount, 1650);
   assert.equal(o.shipping.exGstCents, 1365);
 });
 
@@ -163,8 +163,8 @@ test("Australia is priced by the carrier: cheapest NZ Post International, markup
   const o = await priceAu();
   assert.equal(o.shipping.source, "carrier");
   assert.equal(o.shipping.carrier, "NZ Post International Economy", "Aramex is cheaper but isn't on the list");
-  // $72.78 x 1.08 = $78.60, an export so zero-rated: no x1.15.
-  assert.equal(o.shipping.amount, 7900);
+  // $72.78 x 1.02 = $74.24, an export so zero-rated: no x1.15.
+  assert.equal(o.shipping.amount, 7450);
   assert.equal(o.shipping.exGstCents, 7278);
   assert.equal(sent[0].Destination.Address.CountryCode, "AU");
   assert.equal(sent[0].Destination.Address.PostCode, "2010");
@@ -179,7 +179,7 @@ test("Australia: two cartons are quoted as one carton each, and charged for both
   assert.equal(sent[0].Packages.length, 1, "one carton per question");
   assert.equal(sent[0].Packages[0].Kg, 4.1, "the weight of ONE of the two cartons");
   assert.equal(o.shipping.exGstCents, 14000, "both cartons paid for");
-  assert.equal(o.shipping.amount, 15150, "$140 x 1.08 = $151.20, no GST, up to 50c");
+  assert.equal(o.shipping.amount, 14300, "$140 x 1.02 = $142.80, no GST, up to 50c");
 });
 
 test("NZ still asks about every carton in one go", async () => {
