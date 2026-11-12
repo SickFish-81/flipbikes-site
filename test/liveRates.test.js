@@ -170,10 +170,21 @@ test("Australia is priced by the carrier: cheapest NZ Post International, markup
   assert.equal(sent[0].Destination.Address.PostCode, "2010");
 });
 
-test("Australia is quoted for every carton, not a flat fee", async () => {
-  reply = quoted([{ QuoteId: "a2", CarrierName: "NZ Post International Economy", Charge: 140 }]);
-  await priceAu([{ sku: "flip-g3", qty: 5 }]);
-  assert.equal(sent[0].Packages.length, 2, "five chocks are two cartons to Australia too");
+test("Australia: two cartons are quoted as one carton each, and charged for both", async () => {
+  // NZ Post International rejects two cartons in one request as "Item over
+  // weight", so we ask about one carton and charge for each.
+  reply = quoted([{ QuoteId: "a1", CarrierName: "NZ Post International", Charge: 70 }]);
+  const o = await priceAu([{ sku: "flip-g3", qty: 5 }]);
+  assert.equal(carrierCalls().length, 1);
+  assert.equal(sent[0].Packages.length, 1, "one carton per question");
+  assert.equal(sent[0].Packages[0].Kg, 4.1, "the weight of ONE of the two cartons");
+  assert.equal(o.shipping.exGstCents, 14000, "both cartons paid for");
+  assert.equal(o.shipping.amount, 15150, "$140 x 1.08 = $151.20, no GST, up to 50c");
+});
+
+test("NZ still asks about every carton in one go", async () => {
+  await price([{ sku: "flip-g3", qty: 5 }]);
+  assert.equal(sent[0].Packages.length, 2);
 });
 
 test("no live price to Australia means no checkout, never the unchecked $60", async () => {

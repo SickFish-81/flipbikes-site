@@ -81,8 +81,16 @@ export async function liveShipping({ order, parcel, signatureRequired = true }) 
   try {
     const destination = destinationFrom(order);
     const packages = packagesFor(parcel);
+    // NZ Post International takes ONE parcel per consignment. Ask it about two
+    // cartons at once and it adds them together and rejects the lot as "Item
+    // over weight" (seen live, 12 Nov, five chocks to Sydney). Each carton
+    // goes on its own ticket, so ask about one carton and charge for each.
+    // packagesFor() splits the weight evenly, so every carton is the same.
+    const perParcel = au && packages.length > 1;
+    const asked = perParcel ? [packages[0]] : packages;
+    const count = perParcel ? packages.length : 1;
     const { available, rejected, suppressed, validationErrors, keys } = await rates({
-      destination, packages, signatureRequired,
+      destination, packages: asked, signatureRequired,
       reference: "quote",
     });
 
@@ -121,7 +129,7 @@ export async function liveShipping({ order, parcel, signatureRequired = true }) 
     // everywhere, because that is how a price is shown to a New Zealander.
     // Freight to Australia is an export and zero-rated, like the goods
     // (invoice.js, GST_ON_AUSTRALIA), so it carries no GST at all.
-    const exGst = best.price * MARKUP();
+    const exGst = best.price * count * MARKUP();
     const amount = roundUpTo50c(Math.round(exGst * (au ? 100 : 115))); // dollars -> cents
 
     return {
@@ -141,7 +149,7 @@ export async function liveShipping({ order, parcel, signatureRequired = true }) 
       source: "carrier",
       carrier: best.q.CarrierName || null,
       quoteId: best.q.QuoteId || null,
-      exGstCents: Math.round(best.price * 100),
+      exGstCents: Math.round(best.price * count * 100),
     };
   } catch (err) {
     // Slow, refused, offline: the table answers instead and the sale proceeds.
