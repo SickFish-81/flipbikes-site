@@ -68,3 +68,4 @@
 .trade-secondary:disabled { opacity: .6; cursor: wait; }
 .trade-code { letter-spacing: 6px; font-size: 22px; max-width: 200px; }
 .trade-done { font-family: "Zen Dots", sans-serif; font-weight: 400; color: #ffc800; font-size: 22px; }
+.contact-link { color: inherit; text-decoration: underline; }

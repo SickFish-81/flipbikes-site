@@ -25,6 +25,8 @@
   function setCart(c) { write(CART_KEY, c); refreshNavCount(); }
 
   // ---- helpers
+  // Analytics (js/track.js). Never pass personal details.
+  function track(name, details) { if (window.flipTrack) window.flipTrack(name, details); }
   function money(cents) { return "$" + (cents / 100).toFixed(2); }
   function product(sku) {
     return (shop && shop.products || []).filter(function (p) { return p.sku === sku; })[0] || null;
@@ -123,6 +125,7 @@
       var btn = el("button", { type: "button", class: "button shop-add", text: "Add to cart" });
       btn.addEventListener("click", function () {
         if (addToCart(p.sku)) {
+          track("Add to cart", { sku: p.sku, page: location.pathname === "/" ? "/index.html" : location.pathname });
           status.textContent = "Added - ";
           status.appendChild(el("a", { href: "cart.html", text: "view cart" }));
         } else {
@@ -197,7 +200,7 @@
         setCart(c); renderCart();
       });
       var remove = el("button", { type: "button", class: "cart-remove", text: "Remove" });
-      remove.addEventListener("click", function () { setCart(getCart().filter(function (x) { return x.sku !== l.sku; })); renderCart(); });
+      remove.addEventListener("click", function () { track("Removed from cart", { sku: l.sku }); setCart(getCart().filter(function (x) { return x.sku !== l.sku; })); renderCart(); });
       box.appendChild(el("div", { class: "cart-line" }, [
         el("div", { class: "cart-name" }, [el("strong", { text: p.name }), el("span", { class: "cart-unit", text: money(p.price) + " each" })]),
         el("div", { class: "cart-controls" }, [qty, remove]),
@@ -330,11 +333,13 @@
     var pay = el("button", { type: "button", id: "cart-pay", class: "button cart-pay", text: "Pay securely with card" });
     pay.addEventListener("click", function () {
       error.textContent = "";
-      if (!name.value.trim()) { error.textContent = "Please enter your name."; name.focus(); return; }
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value.trim())) { error.textContent = "Please enter a valid email address."; email.focus(); return; }
-      if (phone.value.replace(/\D/g, "").length < 7) { error.textContent = "Please enter a phone number for the courier."; phone.focus(); return; }
-      if (!ui.addr || !ui.quote) { error.textContent = "Please enter your delivery address so we can price shipping."; return; }
+      function blocked(field) { track("Checkout blocked", { field: field, country: ui.country }); }
+      if (!name.value.trim()) { blocked("name"); error.textContent = "Please enter your name."; name.focus(); return; }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value.trim())) { blocked("email"); error.textContent = "Please enter a valid email address."; email.focus(); return; }
+      if (phone.value.replace(/\D/g, "").length < 7) { blocked("phone"); error.textContent = "Please enter a phone number for the courier."; phone.focus(); return; }
+      if (!ui.addr || !ui.quote) { blocked("address"); error.textContent = "Please enter your delivery address so we can price shipping."; return; }
       pay.disabled = true; pay.textContent = "Please wait...";
+      track("Checkout started", { items: getCart().reduce(function (s, l) { return s + l.qty; }, 0), country: ui.country });
       fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -349,13 +354,14 @@
         if (res.ok && res.data.url) { window.location.href = res.data.url; return; }
         throw new Error(res.data.error || "Couldn't start checkout. Please try again.");
       }).catch(function (e) {
+        track("Checkout error", { country: ui.country, error: e.message || "unknown" });
         error.textContent = e.message || "Couldn't start checkout. Please try again.";
         pay.disabled = false; pay.textContent = "Pay securely with card";
       });
     });
     root.appendChild(error);
     root.appendChild(pay);
-    root.appendChild(el("p", { class: "cart-fine", text: "You'll be taken to Stripe's secure page to pay. Questions? Call Craig on +64 021 0832 7787." }));
+    root.appendChild(el("p", { class: "cart-fine", text: "You'll be taken to Stripe's secure page to pay. Questions? Call Craig on +64 21 0832 7787." }));
     syncRuralVisibility();
   }
 
@@ -370,11 +376,11 @@
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
         if (mySeq !== ui.seq) return; // a newer change superseded this one
-        if (res.ok) { ui.quote = res.d; ui.quoteError = ""; } else { ui.quote = null; ui.quoteError = res.d.error || "Couldn't price shipping."; }
+        if (res.ok) { ui.quote = res.d; ui.quoteError = ""; } else { ui.quote = null; ui.quoteError = res.d.error || "Couldn't price shipping."; track("Freight quote failed", { country: ui.country, error: ui.quoteError }); }
         drawSummary();
       }).catch(function () {
         if (mySeq !== ui.seq) return;
-        ui.quote = null; ui.quoteError = "Couldn't price shipping. Please try again."; drawSummary();
+        ui.quote = null; ui.quoteError = "Couldn't price shipping. Please try again."; track("Freight quote failed", { country: ui.country, error: "network" }); drawSummary();
       });
   }
 

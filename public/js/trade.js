@@ -22,6 +22,9 @@
     return n;
   }
 
+  // Analytics (js/track.js). Never pass personal details.
+  function track(name, details) { if (window.flipTrack) window.flipTrack(name, details); }
+
   function api(body) {
     return fetch("/api/dealer", {
       method: "POST", credentials: "same-origin",
@@ -51,6 +54,7 @@
       api({ action: "request_code", email: email.value }).then(function (r) {
         btn.disabled = false;
         if (!r.ok) { msg.textContent = r.body.error || "Something went wrong."; return; }
+        track("Trade code requested");
         showCode(email.value.trim(), r.body.message);
       });
     } }, [
@@ -71,6 +75,7 @@
       api({ action: "verify_code", email: email, code: code.value }).then(function (r) {
         btn.disabled = false;
         if (!r.ok) { msg.textContent = r.body.error || "That didn't work."; return; }
+        track("Trade signed in");
         loadMe();
       });
     } }, [
@@ -167,6 +172,7 @@
         .then(function (r) {
           placeBtn.disabled = false; placeBtn.textContent = "Place order";
           if (!r.ok) { msg.textContent = r.body.error || "The order didn't go through."; return; }
+          track("Trade order placed", { items: lines().reduce(function (s, l) { return s + l.qty; }, 0) });
           showPlaced(r.body);
         });
     });

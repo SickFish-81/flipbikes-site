@@ -74,7 +74,7 @@ export default async function handler(req, res) {
 
   const p = new URLSearchParams();
   p.set("mode", "payment");
-  p.set("success_url", `${origin}/thanks.html`);
+  p.set("success_url", `${origin}/thanks.html?session_id={CHECKOUT_SESSION_ID}`);
   p.set("cancel_url", `${origin}/cart.html`);
   p.set("customer_email", email);
   p.set("shipping_options[0][shipping_rate_data][type]", "fixed_amount");
