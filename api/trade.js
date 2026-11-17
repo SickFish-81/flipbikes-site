@@ -52,6 +52,19 @@ const invoiceNo = (v) => {
   return Number.isInteger(n) && n > 0 ? n : null;
 };
 
+// North Island courier booking is paused while Craig uses up his prepaid
+// NZ Post tickets. NZ postcodes under 7000 are North Island (the same split
+// as api/_lib/shipping.js). A paused order falls back to the hand ticket,
+// exactly like a collection or an overseas order: the label sheet prints our
+// own address block, Craig sticks a ticket on it and marks it sent.
+// To start booking them again, set FLIP_GSS_NORTH_PAUSED=0 in Vercel.
+const northPaused = () => String(process.env.FLIP_GSS_NORTH_PAUSED ?? "1").trim() !== "0";
+const isNorthIsland = (o) => {
+  const a = o.address || {};
+  const pc = Number(a.postcode || a.manual?.postcode);
+  return Number.isFinite(pc) && pc > 0 && pc < 7000;
+};
+
 async function book(b) {
   const n = invoiceNo(b.invoice_number);
   if (!n) return { status: 400, body: { error: "Which order? No invoice number." } };
@@ -70,6 +83,11 @@ async function book(b) {
   }
   if (o.address?.collect === true) {
     return { status: 400, body: { error: "This order is being collected — there's no courier to book." } };
+  }
+  // Booked-but-no-label still goes through: that only fetches the label for
+  // a consignment already paid for, it never books another.
+  if (!o.consignment_id && northPaused() && isNorthIsland(o)) {
+    return { status: 409, body: { error: `FLIP-${n} is going to the North Island. GoSweetSpot booking is paused while we use up the prepaid tickets, so put a ticket on it and mark it sent.` } };
   }
 
   const r = await ensureConsignment(o.session_id);

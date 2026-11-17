@@ -80,6 +80,7 @@ beforeEach(() => {
   process.env.GSS_SITE_ID = "4242";
   process.env.GSS_BASE_URL = "https://carrier.fake";
   delete process.env.FLIP_TRADE_ORIGINS;
+  delete process.env.FLIP_GSS_NORTH_PAUSED;
   delete process.env.FLIP_COLLECTING_CARRIERS;
   delete process.env.FLIP_FREIGHT_MARKUP;
 
@@ -320,6 +321,7 @@ test("book: a staff member who is not an owner can't book, and the carrier is no
 
 test("book: an unpacked order is booked once, label filed, and a second press books nothing", async () => {
   withCarrier();
+  process.env.FLIP_GSS_NORTH_PAUSED = "0"; // Hamilton is North Island
   Object.assign(rows[1009], { packed_at: null, consignment_id: null, tracking_number: null, label_fetched_at: null });
 
   const r = await call(trade, { token: OWNER, body: { action: "book", invoice_number: 1009 } });
@@ -347,6 +349,34 @@ test("book: an order already marked sent with no booking was hand-ticketed — r
   assert.equal(r.code, 409);
   assert.match(r.body.error, /ticketed by hand/);
   assert.equal(shipments, 0);
+});
+
+test("book: North Island is paused by default — refused, nothing booked, falls back to the hand ticket", async () => {
+  withCarrier();
+  Object.assign(rows[1009], { packed_at: null, consignment_id: null, tracking_number: null, label_fetched_at: null });
+  const r = await call(trade, { token: OWNER, body: { action: "book", invoice_number: 1009 } });
+  assert.equal(r.code, 409);
+  assert.match(r.body.error, /North Island/);
+  assert.match(r.body.error, /prepaid tickets/);
+  assert.equal(shipments, 0);
+  assert.equal(rows[1009].consignment_id, null);
+});
+
+test("book: South Island still books while the North Island is paused", async () => {
+  withCarrier();
+  Object.assign(rows[1009], { packed_at: null, consignment_id: null, tracking_number: null, label_fetched_at: null,
+    address: { ...rows[1009].address, postcode: "9016" } });
+  const r = await call(trade, { token: OWNER, body: { action: "book", invoice_number: 1009 } });
+  assert.equal(r.code, 200, JSON.stringify(r.body));
+  assert.equal(shipments, 1);
+});
+
+test("book: a North Island order already booked can still fetch its label while paused", async () => {
+  withCarrier();
+  Object.assign(rows[1009], { packed_at: null, consignment_id: "555", tracking_number: "NZP123", label_fetched_at: null });
+  const r = await call(trade, { token: OWNER, body: { action: "book", invoice_number: 1009 } });
+  assert.notEqual(r.code, 409, JSON.stringify(r.body));
+  assert.equal(shipments, 0, "fetching a label must never book a second courier");
 });
 
 test("book: a collection is refused", async () => {
