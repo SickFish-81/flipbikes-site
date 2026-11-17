@@ -35,7 +35,11 @@
     if (!a) return;
     var href = a.getAttribute("href") || "";
     if (/^tel:/i.test(href)) window.flipTrack("Phone tap", { page: page() });
-    else if (/^mailto:/i.test(href)) window.flipTrack("Email tap", { page: page() });
+    else if (/^mailto:/i.test(href)) {
+      // Business addresses only (sales@, ben@), so the address itself is fine
+      // to record: it shows how many people email the trade rep.
+      window.flipTrack("Email tap", { page: page(), to: href.slice(7).split("?")[0].toLowerCase() });
+    }
   }, true);
 
   // Enquiry forms (they post to /api/send).

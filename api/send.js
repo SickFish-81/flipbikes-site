@@ -31,6 +31,9 @@
 // directly means if Craig ever changes personal email, you change one
 // forwarding rule instead of redeploying this site.
 const TO = "craig@betterservice.co.nz";
+// Ben is the FLIP trade rep, so he gets every enquiry too and picks up the
+// trade and dealer ones. Craig still answers customers.
+const TRADE_REP = "ben@flipbikes.co.nz";
 
 // The From address must be on a domain verified in Resend, or Resend rejects
 // the send outright. flipbikes.co.nz gets verified as part of the Cloudflare
@@ -94,7 +97,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         from: FROM,
-        to: [TO],
+        to: [TO, TRADE_REP],
         // Reply-To is what makes this useful: Craig hits reply in Gmail and
         // it goes to the customer, not to noreply@.
         reply_to: email,

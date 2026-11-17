@@ -61,7 +61,7 @@ test("track: phone and email taps are counted", () => {
   t.listeners.click(link("cart.html"));
   assert.deepEqual(t.queued(), [
     ["event", { name: "Phone tap", data: { page: "/index.html" } }],
-    ["event", { name: "Email tap", data: { page: "/index.html" } }],
+    ["event", { name: "Email tap", data: { page: "/index.html", to: "sales@flipbikes.co.nz" } }],
   ]);
 });
 
@@ -77,4 +77,25 @@ test("track: a purchase counts once per Stripe session, even if the thanks page 
 test("checkout: Stripe sends the buyer back with the session id, for purchase counting", () => {
   const src = readFileSync(new URL("../api/checkout.js", import.meta.url), "utf8");
   assert.ok(src.includes("/thanks.html?session_id={CHECKOUT_SESSION_ID}"));
+});
+
+test("contact: trade enquiries point at Ben, buying a chock still points at Craig", () => {
+  for (const page of ["index.html", "about.html", "faq.html", "installation.html", "contact.html"]) {
+    const html = read(page);
+    assert.match(html, /Buying a chock\? Call Craig|or call Craig on/, `${page}: customers should still be sent to Craig`);
+    assert.match(html, /Trade, dealer and trailer builder enquiries: email Ben on (<span class="text-span-4">)?<a href="mailto:ben@flipbikes\.co\.nz"/, `${page}: trade line should go to Ben`);
+    assert.doesNotMatch(html, /wholesale enquiries please call Craig/, `${page}: old trade line still there`);
+  }
+  assert.match(read("js/trade.js"), /mailto:ben@flipbikes\.co\.nz/);
+});
+
+test("contact: the enquiry form reaches Ben as well as Craig, and trade mail replies to both", async () => {
+  const send = readFileSync(new URL("../api/send.js", import.meta.url), "utf8");
+  assert.match(send, /to: \[TO, TRADE_REP\]/);
+  const { TRADE_REPLY_TO, REPLY_TO } = await import("../api/_lib/mail.js");
+  assert.deepEqual(TRADE_REPLY_TO, ["ben@flipbikes.co.nz", "craig@betterservice.co.nz"]);
+  assert.equal(REPLY_TO, "craig@betterservice.co.nz", "retail customers still reply to Craig");
+  for (const f of ["../api/dealer.js", "../api/_lib/tradeOrder.js"]) {
+    assert.match(readFileSync(new URL(f, import.meta.url), "utf8"), /reply_to: TRADE_REPLY_TO/, `${f} should reply to Ben and Craig`);
+  }
 });

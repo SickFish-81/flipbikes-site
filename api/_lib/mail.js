@@ -26,6 +26,9 @@ export const recipients = () => {
 };
 export const FROM = "Flip Bikes Website <noreply@flipbikes.co.nz>";
 export const REPLY_TO = "craig@betterservice.co.nz";
+// Trade mail (dealer sign-in codes, trade invoices): Ben is the FLIP trade rep
+// and Craig stays copied, so a dealer's reply reaches both.
+export const TRADE_REPLY_TO = ["ben@flipbikes.co.nz", "craig@betterservice.co.nz"];
 
 export async function send(key, { from = FROM, to, subject, text, html, reply_to, attachments }) {
   const r = await fetch("https://api.resend.com/emails", {

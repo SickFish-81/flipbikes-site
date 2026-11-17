@@ -36,7 +36,7 @@ import {
 import { atCostQuote, sendTradeInvoice, TRADE_FROM, escapeHtml } from "./_lib/tradeOrder.js";
 import { buildInvoice, invoiceNumber } from "./_lib/invoice.js";
 import { invoicePdfBase64, invoicePdfName } from "./_lib/invoicePdf.js";
-import { send, recipients, REPLY_TO } from "./_lib/mail.js";
+import { send, recipients, TRADE_REPLY_TO } from "./_lib/mail.js";
 
 const GENERIC_SENT = "If that email has a dealer account, a sign-in code is on its way. It works for 10 minutes.";
 const BAD_CODE = "That code isn't right, or it has expired. Ask for a new one.";
@@ -139,7 +139,7 @@ async function requestCode(b, res) {
         subject: "Your FLIP dealer sign-in code",
         text: `Your sign-in code is ${code}\n\nIt works for ${CODE_MINUTES} minutes. If you didn't ask for it, you can ignore this email.\n\nFLIP Bike Chocks`,
         html: `<p>Your sign-in code is</p><p style="font-size:28px;font-weight:bold;letter-spacing:4px">${code}</p><p>It works for ${CODE_MINUTES} minutes. If you didn't ask for it, you can ignore this email.</p><p>FLIP Bike Chocks</p>`,
-        reply_to: REPLY_TO,
+        reply_to: TRADE_REPLY_TO,
       });
     } catch (err) {
       console.error("dealer code email failed:", err?.message ?? err);

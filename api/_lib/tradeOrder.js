@@ -12,7 +12,7 @@ import { business } from "./business.js";
 import { money } from "./catalog.js";
 import { buildInvoice, invoiceText, invoiceHtml, invoiceNumber, invoiceTitle } from "./invoice.js";
 import { invoicePdfBase64, invoicePdfName } from "./invoicePdf.js";
-import { sendLogged, recipients, REPLY_TO } from "./mail.js";
+import { sendLogged, recipients, TRADE_REPLY_TO } from "./mail.js";
 
 // The sender a trade customer sees. Same verified address as the web shop's
 // mail, but a business is writing to a business, not "the website".
@@ -132,7 +132,7 @@ export async function sendTradeInvoice(invoiceNo, { resend = false, dealerId = n
     subject: `${inv.isTaxInvoice ? "Tax invoice" : "Invoice"} ${inv.number} - FLIP Bike Chocks`,
     text: `Hi ${who},\n\nThanks for your order. Your ${kindWord} is below${pdf ? " and attached as a PDF" : ""}.\n\n` + invoiceText(inv),
     html: invoiceHtml(inv, intro),
-    reply_to: REPLY_TO,
+    reply_to: TRADE_REPLY_TO,
     attachments,
   });
 

@@ -60,7 +60,7 @@
     } }, [
       el("p", { class: "cart-fine", text: "For approved FLIP dealers. Sign in with the email address we have for your business and we'll send you a code." }),
       field("Email", email), msg, btn,
-      el("p", { class: "cart-fine" }, ["Not a dealer yet? ", el("a", { href: "contact.html", class: "trade-link", text: "Get in touch" }), " about trade pricing."]),
+      el("p", { class: "cart-fine" }, ["Not a dealer yet? Email Ben on ", el("a", { href: "mailto:ben@flipbikes.co.nz", class: "trade-link", text: "ben@flipbikes.co.nz" }), " about trade pricing."]),
     ]);
     render([form]);
     email.focus();
